@@ -35,6 +35,19 @@ def test_flatten_math_cong_symbol():
     assert "cong" not in t.lower()
 
 
+def test_flatten_math_wrong_degree_wedge_circ():
+    t = _flatten_math_to_text(r"$\angle$ ACB = $90^{\wedge}\circ$，$\angle$ A = $30^{\wedge}\circ$")
+    assert "°" in t
+    assert "wedge" not in t.lower()
+    assert "circ" not in t.lower()
+
+
+def test_flatten_math_broken_frac_sqrt_option():
+    t = _flatten_math_to_text(r"B. frac $\sqrt{}$ 22")
+    assert "√2/2" in t.replace(" ", "")
+    assert "frac" not in t.lower()
+
+
 def test_stem_strip_trailing_inline_options():
     stem = "如图，已知条件？\nA. 甲\nB. 乙\nC. 丙\nD. 丁"
     opts = ["甲", "乙", "丙", "丁"]

@@ -24,6 +24,18 @@ _GAP_AFTER_Q = 5.0
 def _latex_inner_to_printable(s: str) -> str:
     """把 $...$ 里的片段转成可楷体直排的近似写法（不再整段插图）。"""
     t = s.strip()
+    # 模型常把角度写成 ^{\wedge}\circ 或 ^\wedge\circ，先规整为一度符号
+    t = re.sub(r"\^\{\\wedge\}\s*\\circ\b", "°", t)
+    t = re.sub(r"\^\wedge\s*\\circ\b", "°", t)
+    t = re.sub(r"\^\{\\wedge\}\s*circ\b", "°", t)
+    t = re.sub(r"\^\wedge\s*circ\b", "°", t)
+    # 选项里烂掉的 \frac{\sqrt{a}}{b}：变成「frac √{} 22」一类
+    t = re.sub(
+        r"(?i)frac\s*\$?\s*\\?sqrt\s*\{\s*\}\s*\$?\s*(\d)(\d)\b",
+        r"√\1/\2",
+        t,
+    )
+    t = re.sub(r"(?i)\bfrac\s+sqrt\s*\{\s*\}\s*(\d)(\d)\b", r"√\1/\2", t)
     # 常见几何 / 运算（顺序：先长后短，避免误替换）
     repl = (
         (r"\\triangle", "△"),
@@ -75,6 +87,22 @@ def _latex_inner_to_printable(s: str) -> str:
     return t if t else " "
 
 
+def _normalize_malformed_latex_tokens(text: str) -> str:
+    """题干/选项里常夹半拉 LaTeX（美元符不配对或 frac 在 $ 外），先整段修再展开 $...$。"""
+    t = text
+    t = re.sub(r"\^\{\\wedge\}\s*\\circ\b", "°", t)
+    t = re.sub(r"\^\wedge\s*\\circ\b", "°", t)
+    t = re.sub(r"\^\{\\wedge\}\s*circ\b", "°", t)
+    t = re.sub(r"\^\wedge\s*circ\b", "°", t)
+    t = re.sub(
+        r"(?i)\bfrac\s*\$?\s*\\?sqrt\s*\{\s*\}\s*\$?\s*(\d)(\d)\b",
+        r"√\1/\2",
+        t,
+    )
+    t = re.sub(r"(?i)\bfrac\s+sqrt\s*\{\s*\}\s*(\d)(\d)\b", r"√\1/\2", t)
+    return t
+
+
 def _flatten_math_to_text(text: str) -> str:
     """将 $$...$$ 与 $...$ 全部展开为纯文本。"""
 
@@ -84,7 +112,8 @@ def _flatten_math_to_text(text: str) -> str:
     def repl_inline(m: re.Match[str]) -> str:
         return _latex_inner_to_printable(m.group(1))
 
-    s = re.sub(r"\$\$([^$]+)\$\$", repl_block, text, flags=re.DOTALL)
+    s = _normalize_malformed_latex_tokens(text)
+    s = re.sub(r"\$\$([^$]+)\$\$", repl_block, s, flags=re.DOTALL)
     s = re.sub(r"\$([^$]+)\$", repl_inline, s)
     return s
 

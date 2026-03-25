@@ -125,6 +125,7 @@ def generate_practice_set(
         "为防输出截断：每题 stem 控制在约 400 汉字内，answer_outline 约 500 汉字内；"
         "解题步骤精炼，禁止在 JSON 字符串里再嵌套第二段 JSON 或 ``` 代码块。"
         "公式若在 $...$ 内写 LaTeX，JSON 字符串里每个反斜杠须双写（例：\\\\frac{a}{b}、\\\\angle ABC）。"
+        "角度须写 $90^\\\\circ$ 或 $90^{\\\\circ}$，禁止写 ^\\\\wedge\\\\circ；分式与根式须写完整如 $\\\\frac{\\\\sqrt{2}}{2}$，勿输出裸 frac 与空根号。"
     )
 
     def _one_batch(n_use: int, attempt: int, order_hint: str = "") -> PracticeSet:
@@ -180,9 +181,18 @@ def generate_practice_set(
             questions=merged[:total],
         )
 
-    if n > 12:
+    # 9～12 题单次 JSON 常被截断，末尾题丢失；按较小 chunk 分批可显著减少缺题。
+    def _chunk_for_n(total: int) -> int | None:
+        if total > 12:
+            return 12
+        if total >= 9:
+            return 5
+        return None
+
+    chunk0 = _chunk_for_n(n)
+    if chunk0 is not None:
         try:
-            ps = _multi_batch_generate(n, chunk=12)
+            ps = _multi_batch_generate(n, chunk=chunk0)
         except ValueError as e:
             last_err = e
             ps = None
@@ -225,7 +235,7 @@ def generate_practice_set(
     if ps is None:
         raise ValueError(str(last_err) if last_err else "练习 JSON 解析失败") from last_err
     qs = list(ps.questions)[:n]
-    # 重试时会降为 n-2、n-4 题，或模型 JSON 截断导致题数不足；先专补缺题，尽量避免静默占位。
+    # 重试时会降为 n-2、n-4 题，或模型 JSON 截断导致题数不足；先整批补缺，再逐题补缺，尽量避免静默占位。
     if len(qs) < n:
         need = n - len(qs)
         start_idx = len(qs) + 1
@@ -239,6 +249,23 @@ def generate_practice_set(
                 qs.append(eq)
         except ValueError:
             pass
+    # 仍缺则按单题多次请求（小输出不易截断）
+    fill_attempts = 0
+    while len(qs) < n and fill_attempts < 15:
+        fill_attempts += 1
+        idx = len(qs) + 1
+        try:
+            hint_1 = (
+                f"仅生成第 {idx} 题一道题：JSON 里 questions 长度必须为 1，"
+                f"order_index={idx}，与同一考点、难度与卷内已有题相当，避免重复题干。"
+            )
+            one = _one_batch(1, 0, order_hint=hint_1)
+            if one.questions:
+                qs.append(one.questions[0])
+            else:
+                break
+        except ValueError:
+            break
     while len(qs) < n:
         qs.append(
             PracticeQuestion(
