@@ -5,7 +5,6 @@ $Root = $PSScriptRoot
 $Backend = Join-Path $Root "backend"
 $Frontend = Join-Path $Root "frontend"
 $Py = Join-Path $Backend ".venv\Scripts\python.exe"
-$Uvicorn = Join-Path $Backend ".venv\Scripts\uvicorn.exe"
 
 if (-not (Test-Path $Py)) {
     Write-Host "Creating Python venv and installing backend deps..." -ForegroundColor Yellow
@@ -33,13 +32,16 @@ if (-not (Test-Path $envFile)) {
     }
 }
 
-$backendCmd = "Set-Location '$Backend'; & '$Uvicorn' app.main:app --host 127.0.0.1 --port 8000"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd
+# Use -WorkingDirectory + relative commands so paths with non-ASCII (e.g. Chinese) are not embedded in -Command (avoids encoding/garbled path issues).
+Start-Process powershell `
+    -WorkingDirectory $Backend `
+    -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 
 Start-Sleep -Seconds 3
 
-$frontendCmd = "Set-Location '$Frontend'; npm run dev -- --host 127.0.0.1 --port 5173"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd
+Start-Process powershell `
+    -WorkingDirectory $Frontend `
+    -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "npm run dev -- --host 127.0.0.1 --port 5173"
 
 Start-Sleep -Seconds 5
 Start-Process "http://127.0.0.1:5173"
