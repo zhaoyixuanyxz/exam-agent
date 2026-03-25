@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { textForChatDisplay } from "../utils/chatDisplay";
+import { displayUserMessageContent, textForChatDisplay } from "../utils/chatDisplay";
 
 type Artifact = {
   kind: string;
@@ -14,8 +14,13 @@ type Bubble = { role: "user" | "assistant"; text: string };
 
 const API = "";
 
-export function Chat() {
-  const [conversationId, setConversationId] = useState<string | null>(null);
+type ChatProps = {
+  conversationId: string;
+  /** 发送一轮完成后用于刷新侧边栏排序与预览 */
+  onConversationActivity?: () => void;
+};
+
+export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const [input, setInput] = useState("");
   const [sourceType, setSourceType] = useState("pdf");
   const [url, setUrl] = useState("");
@@ -31,17 +36,59 @@ export function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, streaming, statusHint]);
 
-  const ensureConversation = useCallback(async () => {
-    if (conversationId) return conversationId;
-    const r = await fetch(`${API}/api/conversations`, { method: "POST" });
-    const j = await r.json();
-    setConversationId(j.conversation_id);
-    return j.conversation_id as string;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [mRes, aRes] = await Promise.all([
+          fetch(`${API}/api/conversations/${conversationId}/messages`),
+          fetch(`${API}/api/conversations/${conversationId}/artifacts`),
+        ]);
+        if (cancelled) return;
+        if (!mRes.ok) {
+          setBubbles([]);
+          setArtifacts([]);
+          return;
+        }
+        const mj = await mRes.json();
+        const next: Bubble[] = [];
+        for (const msg of mj.messages || []) {
+          if (msg.role === "user") {
+            next.push({
+              role: "user",
+              text: displayUserMessageContent(String(msg.content || "")),
+            });
+          } else if (msg.role === "assistant") {
+            next.push({
+              role: "assistant",
+              text: textForChatDisplay(String(msg.content || "")),
+            });
+          }
+        }
+        setBubbles(next);
+        setStreaming("");
+        setStatusHint("");
+        if (aRes.ok) {
+          const aj = await aRes.json();
+          setArtifacts((aj.items || []) as Artifact[]);
+        } else {
+          setArtifacts([]);
+        }
+      } catch {
+        if (!cancelled) {
+          setBubbles([]);
+          setArtifacts([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [conversationId]);
 
-  const send = async () => {
+  const send = useCallback(async () => {
     if (busy) return;
-    const cid = await ensureConversation();
+    const cid = conversationId;
     const fd = new FormData();
     fd.append("conversation_id", cid);
     fd.append("message", input);
@@ -106,6 +153,7 @@ export function Chat() {
       }
       setStreaming("");
       setStatusHint("");
+      onConversationActivity?.();
     } catch (e) {
       setBubbles((b) => [
         ...b,
@@ -116,10 +164,10 @@ export function Chat() {
     } finally {
       setBusy(false);
     }
-  };
+  }, [busy, conversationId, file, input, onConversationActivity, sourceType, url]);
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6">
+    <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 md:pl-2">
       <header className="mb-4 flex flex-col gap-2 rounded-2xl border border-white/60 bg-white/70 p-4 shadow-sm backdrop-blur">
         <div className="flex flex-wrap items-center gap-2 text-slate-700">
           <span className="text-2xl" aria-hidden>
@@ -132,7 +180,7 @@ export function Chat() {
         </div>
         <p className="text-sm text-slate-500">
           上传 PDF / Word、粘贴 URL 或正文，助手会帮你对齐年级科目、拆解考点并生成分块练习 PDF（楷体 · 米白底 ·
-          带水印）。
+          带水印）。左侧可管理历史会话与恢复误关页面。
         </p>
       </header>
 
@@ -159,9 +207,7 @@ export function Chat() {
                 🤖
               </span>
             )}
-            <span className="whitespace-pre-wrap">
-              {m.role === "assistant" ? textForChatDisplay(m.text) : m.text}
-            </span>
+            <span className="whitespace-pre-wrap">{m.text}</span>
           </div>
         ))}
         {(statusHint || streaming) && (

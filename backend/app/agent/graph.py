@@ -70,3 +70,10 @@ def get_agent_graph():
     if _graph is None:
         _graph = build_agent_graph()
     return _graph
+
+
+async def delete_agent_thread(thread_id: str) -> None:
+    """删除 LangGraph 中该 thread_id 的检查点（与 conversation_id 一致）。"""
+    saver = _checkpointer
+    if isinstance(saver, AsyncSqliteSaver):
+        await saver.adelete_thread(thread_id)

@@ -9,10 +9,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.graph import get_agent_graph
+from app.agent.graph import delete_agent_thread, get_agent_graph
 from app.config import settings
 from app.db.models import Conversation, ExamPaper, Message
 from app.db.session import SessionLocal, get_session
@@ -20,6 +20,11 @@ from app.db.sync_session import sync_session
 from app.services.llm_errors import user_message_for_llm_error
 from app.services.parsers.pipeline import parse_input
 from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
+from app.services.conversation_delete import (
+    collect_conversation_file_paths,
+    delete_conversation_cascade,
+    unlink_conversation_files,
+)
 from app.services.storage import new_stored_path
 
 
@@ -348,3 +353,124 @@ async def list_artifacts(
     if not conv:
         raise HTTPException(404)
     return {"items": _list_artifacts_sync(conversation_id)}
+
+
+def _preview_from_user_content(content: str | None, max_len: int = 80) -> str:
+    if not content:
+        return ""
+    s = content.strip()
+    prefix = "【系统上下文】"
+    if s.startswith(prefix):
+        idx = s.find("\n\n")
+        if idx != -1:
+            s = s[idx + 2 :].strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+@router.get("/conversations")
+async def list_conversations(session: Annotated[AsyncSession, Depends(get_session)]):
+    """按最近一条消息时间排序；无消息时按会话创建时间。"""
+    last_msg = (
+        select(
+            Message.conversation_id.label("cid"),
+            func.max(Message.created_at).label("last_at"),
+        )
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+    msg_count_sq = (
+        select(func.count(Message.id))
+        .where(Message.conversation_id == Conversation.id)
+        .scalar_subquery()
+    )
+    paper_count_sq = (
+        select(func.count(ExamPaper.id))
+        .where(ExamPaper.conversation_id == Conversation.id)
+        .scalar_subquery()
+    )
+    first_user_sq = (
+        select(Message.content)
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.role == "user",
+        )
+        .order_by(Message.created_at.asc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    stmt = (
+        select(
+            Conversation.id,
+            Conversation.created_at,
+            Conversation.title,
+            func.coalesce(last_msg.c.last_at, Conversation.created_at).label("last_activity_at"),
+            msg_count_sq.label("message_count"),
+            paper_count_sq.label("paper_count"),
+            first_user_sq.label("first_user_raw"),
+        )
+        .outerjoin(last_msg, Conversation.id == last_msg.c.cid)
+        .order_by(func.coalesce(last_msg.c.last_at, Conversation.created_at).desc())
+    )
+    r = await session.execute(stmt)
+    rows = r.all()
+    items: list[dict] = []
+    for row in rows:
+        raw_preview = row.first_user_raw
+        preview = _preview_from_user_content(raw_preview if raw_preview is None else str(raw_preview))
+        items.append(
+            {
+                "id": row.id,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "last_activity_at": row.last_activity_at.isoformat() if row.last_activity_at else None,
+                "title": row.title,
+                "message_count": int(row.message_count or 0),
+                "paper_count": int(row.paper_count or 0),
+                "preview": preview or "（空对话）",
+            }
+        )
+    return {"conversations": items}
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    r = await session.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.asc())
+    )
+    msgs = r.scalars().all()
+    return {
+        "conversation_id": conversation_id,
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in msgs
+        ],
+    }
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    paths, export_dir = collect_conversation_file_paths(conversation_id)
+    await delete_conversation_cascade(session, conversation_id)
+    await delete_agent_thread(conversation_id)
+    unlink_conversation_files(paths, export_dir)
+    return {"ok": True}
