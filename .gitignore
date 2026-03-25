@@ -1,0 +1,14 @@
+data/
+*.egg-info/
+frontend/tsconfig.tsbuildinfo
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+dist/
+*.db
+checkpoints.db
+.venv/
+venv/
