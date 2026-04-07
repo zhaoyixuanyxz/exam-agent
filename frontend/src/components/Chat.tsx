@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useStreamJobs, type StreamArtifact } from "../context/StreamJobsContext";
 import { displayUserMessageContent, textForChatDisplay } from "../utils/chatDisplay";
-
-type Artifact = {
-  kind: string;
-  name: string;
-  path: string;
-  url?: string;
-  knowledge_point_key?: string | null;
-};
 
 type Bubble = { role: "user" | "assistant"; text: string };
 
@@ -21,36 +14,55 @@ type ChatProps = {
 };
 
 export function Chat({ conversationId, onConversationActivity }: ChatProps) {
+  const { getJob, startStream, clearStreamError } = useStreamJobs();
+  const job = getJob(conversationId);
+  const streamRefreshNonce = job.refreshNonce;
+
   const [input, setInput] = useState("");
   const [sourceType, setSourceType] = useState("pdf");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
-  const [streaming, setStreaming] = useState("");
-  const [statusHint, setStatusHint] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifacts, setArtifacts] = useState<StreamArtifact[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef(conversationId);
+
+  conversationIdRef.current = conversationId;
+
+  const busy = job.busy;
+  const streaming = job.streaming;
+  const statusHint = job.statusHint;
+  const displayArtifacts =
+    job.busy && job.artifacts.length > 0 ? job.artifacts : artifacts;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, streaming, statusHint]);
 
   useEffect(() => {
+    const err = job.streamError;
+    if (!err) return;
+    setBubbles((b) => [...b, { role: "assistant", text: err }]);
+    clearStreamError(conversationId);
+  }, [job.streamError, conversationId, clearStreamError]);
+
+  useEffect(() => {
+    const cid = conversationId;
     let cancelled = false;
     (async () => {
       try {
         const [mRes, aRes] = await Promise.all([
-          fetch(`${API}/api/conversations/${conversationId}/messages`),
-          fetch(`${API}/api/conversations/${conversationId}/artifacts`),
+          fetch(`${API}/api/conversations/${cid}/messages`),
+          fetch(`${API}/api/conversations/${cid}/artifacts`),
         ]);
-        if (cancelled) return;
+        if (cancelled || conversationIdRef.current !== cid) return;
         if (!mRes.ok) {
           setBubbles([]);
           setArtifacts([]);
           return;
         }
         const mj = await mRes.json();
+        if (cancelled || conversationIdRef.current !== cid) return;
         const next: Bubble[] = [];
         for (const msg of mj.messages || []) {
           if (msg.role === "user") {
@@ -66,16 +78,15 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
           }
         }
         setBubbles(next);
-        setStreaming("");
-        setStatusHint("");
         if (aRes.ok) {
           const aj = await aRes.json();
-          setArtifacts((aj.items || []) as Artifact[]);
+          if (cancelled || conversationIdRef.current !== cid) return;
+          setArtifacts((aj.items || []) as StreamArtifact[]);
         } else {
           setArtifacts([]);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && conversationIdRef.current === cid) {
           setBubbles([]);
           setArtifacts([]);
         }
@@ -84,13 +95,13 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [conversationId, streamRefreshNonce]);
 
   const send = useCallback(async () => {
     if (busy) return;
-    const cid = conversationId;
+    const requestCid = conversationId;
     const fd = new FormData();
-    fd.append("conversation_id", cid);
+    fd.append("conversation_id", requestCid);
     fd.append("message", input);
     fd.append("source_type", sourceType);
     if (url.trim()) fd.append("url", url.trim());
@@ -102,69 +113,13 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     setBubbles((b) => [...b, { role: "user", text: userLine }]);
     setInput("");
     setFile(null);
-    setBusy(true);
-    setStreaming("");
-    setStatusHint("");
 
-    try {
-      const res = await fetch(`${API}/api/chat/stream`, { method: "POST", body: fd });
-      const reader = res.body?.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      let assistant = "";
-      if (!reader) throw new Error("无响应流");
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() || "";
-        for (const block of parts) {
-          const line = block.startsWith("data: ") ? block.slice(6) : block;
-          if (!line.trim()) continue;
-          let ev: { event?: string; data?: Record<string, unknown> };
-          try {
-            ev = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (ev.event === "status" && ev.data?.message) {
-            setStatusHint(String(ev.data.message));
-          }
-          if (ev.event === "token" && ev.data?.t) {
-            setStatusHint("");
-            assistant += String(ev.data.t);
-            setStreaming(textForChatDisplay(assistant));
-          }
-          if (ev.event === "artifacts" && ev.data?.items) {
-            setArtifacts(ev.data.items as Artifact[]);
-          }
-          if (ev.event === "error" && ev.data?.message) {
-            assistant += `\n⚠️ ${ev.data.message}`;
-            setStreaming(textForChatDisplay(assistant));
-          }
-        }
-      }
-      if (assistant) {
-        setBubbles((b) => [
-          ...b,
-          { role: "assistant", text: textForChatDisplay(assistant) },
-        ]);
-      }
-      setStreaming("");
-      setStatusHint("");
-      onConversationActivity?.();
-    } catch (e) {
-      setBubbles((b) => [
-        ...b,
-        { role: "assistant", text: `请求失败：${e instanceof Error ? e.message : e}` },
-      ]);
-      setStreaming("");
-      setStatusHint("");
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, conversationId, file, input, onConversationActivity, sourceType, url]);
+    startStream(requestCid, fd, {
+      onComplete: () => {
+        onConversationActivity?.();
+      },
+    });
+  }, [busy, conversationId, file, input, onConversationActivity, sourceType, startStream, url]);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 md:pl-2">
@@ -180,7 +135,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         </div>
         <p className="text-sm text-slate-500">
           上传 PDF / Word、粘贴 URL 或正文，助手会帮你对齐年级科目、拆解考点并生成分块练习 PDF（楷体 · 米白底 ·
-          带水印）。左侧可管理历史会话与恢复误关页面。
+          带水印）。切换左侧其他会话时，当前生成可在后台继续；列表中带「生成中」标记。
         </p>
       </header>
 
@@ -228,13 +183,13 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         <div ref={bottomRef} />
       </div>
 
-      {artifacts.length > 0 && (
+      {displayArtifacts.length > 0 && (
         <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/80 p-3 text-sm text-amber-950">
           <div className="mb-2 flex items-center gap-2 font-medium">
             <span>📎</span> 生成文件
           </div>
           <ul className="flex flex-col gap-1">
-            {artifacts.map((a, i) => (
+            {displayArtifacts.map((a, i) => (
               <li key={i}>
                 {a.url ? (
                   <a

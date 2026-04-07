@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import io
+import logging
 import re
 from pathlib import Path
 
 from fpdf import FPDF
 
-from app.models.schemas import PracticeSet
+from app.models.schemas import PracticeQuestion, PracticeSet, PracticeSvgSpec
 from app.services.fonts import resolve_kaiti_font
+from app.services.practice_figure_diagnostics import (
+    FigureEmbedRecord,
+    append_figure_embed_record,
+    log_figure_embed,
+)
+from app.services.practice_path_security import resolve_under_data_dir
+from app.services.practice_svg_safe import sanitize_practice_svg
+
+logger = logging.getLogger(__name__)
 
 RICE = (250, 248, 245)
 WATERMARK = "朱老师私密资料，仅供参考！！"
@@ -19,6 +30,11 @@ _LH_BODY = 8.2
 _LH_OPTION = 7.8
 _INDENT_OPT = 6.0
 _GAP_AFTER_Q = 5.0
+# 题干与选项之间可选插图（不改变题干/选项所用行高）
+_GAP_BEFORE_FIG = 3.0
+_GAP_AFTER_FIG = 2.0
+_LH_CAPTION = 7.0
+_MIN_FIG_SPACE_MM = 78.0
 
 
 def _latex_inner_to_printable(s: str) -> str:
@@ -238,12 +254,184 @@ class RicePDF(FPDF):
         self.cell(0, 8, WATERMARK, align="R")
 
 
+def _resolve_paper_image_path_for_embed(
+    q: PracticeQuestion,
+    order_index_to_paper_paths: dict[int, list[str]] | None,
+) -> Path | None:
+    if q.paper_image_ref and str(q.paper_image_ref).strip():
+        p = resolve_under_data_dir(q.paper_image_ref)
+        if p is not None and p.is_file():
+            return p
+    if (
+        not q.use_paper_figure
+        or q.source_question_order is None
+        or not order_index_to_paper_paths
+    ):
+        return None
+    for raw in order_index_to_paper_paths.get(q.source_question_order, []):
+        p = resolve_under_data_dir(raw)
+        if p is not None and p.is_file():
+            return p
+    return None
+
+
+def _write_figure_caption_pdf(pdf: RicePDF, content_width: float, caption: str) -> None:
+    cap = (caption or "").strip()
+    if not cap:
+        return
+    pdf.set_font("KaiTi", "", 9)
+    pdf.set_text_color(55, 55, 55)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(content_width, _LH_CAPTION, cap, align="L")
+    pdf.set_text_color(30, 30, 30)
+    pdf.ln(1)
+
+
+def _embed_svg_vector(
+    pdf: RicePDF,
+    content_width: float,
+    svg_utf8: str,
+    *,
+    order_index: int,
+) -> bool:
+    try:
+        pdf.ln(_GAP_BEFORE_FIG)
+        if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
+            pdf.add_page()
+        pdf.image(io.BytesIO(svg_utf8.encode("utf-8")), x=pdf.l_margin, w=content_width)
+        pdf.ln(_GAP_AFTER_FIG)
+        return True
+    except Exception as e:
+        logger.debug(
+            "practice_pdf: svg vector embed failed (order_index=%s): %s",
+            order_index,
+            e,
+            exc_info=True,
+        )
+        return False
+
+
+def _embed_question_figure(
+    pdf: RicePDF,
+    content_width: float,
+    q: PracticeQuestion,
+    *,
+    include_figures: bool = True,
+    use_original_figures: bool = False,
+    order_index_to_paper_paths: dict[int, list[str]] | None = None,
+    figure_diagnostics: list[FigureEmbedRecord] | None = None,
+) -> None:
+    """题干与选项之间：优先嵌入原卷图，否则 matplotlib 示意图。"""
+    from app.services.practice_figure_render import render_question_figure_with_diag
+
+    def _emit(outcome: str, reason_code: str) -> None:
+        log_figure_embed(
+            logger,
+            order_index=q.order_index,
+            figure_kind=q.figure_kind,
+            outcome=outcome,
+            reason_code=reason_code,
+        )
+        append_figure_embed_record(
+            figure_diagnostics,
+            order_index=q.order_index,
+            figure_kind=q.figure_kind,
+            outcome=outcome,
+            reason_code=reason_code,
+        )
+
+    if not include_figures:
+        _emit("skipped_include_figures_false", "include_figures_false")
+        return
+
+    paper_ctx = ""
+    if use_original_figures:
+        p_path = _resolve_paper_image_path_for_embed(q, order_index_to_paper_paths)
+        if p_path is not None:
+            suf = p_path.suffix.lower()
+            if suf in (".png", ".jpg", ".jpeg", ".gif"):
+                try:
+                    pdf.ln(_GAP_BEFORE_FIG)
+                    if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
+                        pdf.add_page()
+                    pdf.image(p_path.as_posix(), x=pdf.l_margin, w=content_width)
+                    pdf.ln(_GAP_AFTER_FIG)
+                except Exception as e:
+                    logger.debug(
+                        "practice_pdf: paper image embed failed (order_index=%s)",
+                        q.order_index,
+                        exc_info=True,
+                    )
+                    paper_ctx = f"paper_raster_failed:{type(e).__name__}"
+                else:
+                    _emit("embedded_paper_raster", "ok")
+                    return
+            elif suf == ".svg":
+                try:
+                    raw = p_path.read_text(encoding="utf-8", errors="replace")
+                    clean = sanitize_practice_svg(raw)
+                    if clean is None:
+                        paper_ctx = "paper_svg_sanitize_failed"
+                    elif _embed_svg_vector(pdf, content_width, clean, order_index=q.order_index):
+                        _emit("embedded_paper_svg", "ok")
+                        return
+                    else:
+                        paper_ctx = "paper_svg_embed_failed"
+                except Exception as e:
+                    logger.debug(
+                        "practice_pdf: paper svg read/embed (order_index=%s)",
+                        q.order_index,
+                        exc_info=True,
+                    )
+                    paper_ctx = f"paper_svg_io:{type(e).__name__}"
+            else:
+                paper_ctx = f"unsupported_paper_suffix:{suf}"
+        else:
+            paper_ctx = "paper_path_unresolved"
+
+    if q.figure_kind == "none" or q.figure_spec is None:
+        _emit("skipped_no_figure", paper_ctx or "no_figure_spec")
+        return
+
+    if q.figure_kind == "svg" and isinstance(q.figure_spec, PracticeSvgSpec):
+        clean = sanitize_practice_svg(q.figure_spec.svg)
+        if clean is None:
+            _emit("inline_svg_sanitize_failed", paper_ctx or "sanitize_none")
+            return
+        if _embed_svg_vector(pdf, content_width, clean, order_index=q.order_index):
+            _write_figure_caption_pdf(pdf, content_width, q.figure_spec.caption)
+            _emit("embedded_inline_svg", paper_ctx or "ok")
+            return
+        _emit("svg_embed_failed", paper_ctx or "fpdf_svg_failed")
+        return
+
+    png, rcode = render_question_figure_with_diag(q)
+    if not png:
+        reason = rcode if not paper_ctx else f"{rcode}|{paper_ctx}"
+        _emit("render_failed", reason)
+        return
+
+    pdf.ln(_GAP_BEFORE_FIG)
+    if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
+        pdf.add_page()
+
+    pdf.image(io.BytesIO(png), x=pdf.l_margin, w=content_width)
+    pdf.ln(_GAP_AFTER_FIG)
+
+    _write_figure_caption_pdf(pdf, content_width, q.figure_spec.caption)
+    _emit("embedded_rendered_png", paper_ctx or "ok")
+
+
 def render_practice_pdf(
     practice: PracticeSet,
     out_path: Path,
     *,
     title: str,
     include_answers: bool = False,
+    include_figures: bool = True,
+    use_original_figures: bool = False,
+    order_index_to_paper_paths: dict[int, list[str]] | None = None,
+    collect_figure_diagnostics: list[FigureEmbedRecord] | None = None,
 ) -> None:
     font_path = resolve_kaiti_font()
     pdf = RicePDF(font_path)
@@ -269,6 +457,16 @@ def render_practice_pdf(
         if q.options and q.qtype in ("单选", "多选"):
             stem_pdf = _stem_strip_trailing_inline_options(stem_pdf, q.options)
         _write_paragraphs(pdf, stem_pdf, font_size=11, line_height=_LH_BODY)
+
+        _embed_question_figure(
+            pdf,
+            w,
+            q,
+            include_figures=include_figures,
+            use_original_figures=use_original_figures,
+            order_index_to_paper_paths=order_index_to_paper_paths,
+            figure_diagnostics=collect_figure_diagnostics,
+        )
 
         if q.options:
             pdf.ln(1)
@@ -301,7 +499,16 @@ def render_practice_pdf(
     pdf.output(out_path.as_posix())
 
 
-def render_answer_pdf(practice: PracticeSet, out_path: Path, *, title: str) -> None:
+def render_answer_pdf(
+    practice: PracticeSet,
+    out_path: Path,
+    *,
+    title: str,
+    include_figures: bool = True,
+    use_original_figures: bool = False,
+    order_index_to_paper_paths: dict[int, list[str]] | None = None,
+    collect_figure_diagnostics: list[FigureEmbedRecord] | None = None,
+) -> None:
     font_path = resolve_kaiti_font()
     pdf = RicePDF(font_path)
     pdf.add_page()
@@ -320,6 +527,15 @@ def render_answer_pdf(practice: PracticeSet, out_path: Path, *, title: str) -> N
         pdf.set_x(pdf.l_margin)
         pdf.multi_cell(w, _LH_BODY, f"第 {q.order_index} 题　【{q.qtype}】", align="L")
         pdf.ln(1)
+        _embed_question_figure(
+            pdf,
+            w,
+            q,
+            include_figures=include_figures,
+            use_original_figures=use_original_figures,
+            order_index_to_paper_paths=order_index_to_paper_paths,
+            figure_diagnostics=collect_figure_diagnostics,
+        )
         pdf.set_font("KaiTi", "", 10.5)
         pdf.set_text_color(0, 85, 45)
         _write_paragraphs(pdf, q.answer_outline or "（略）", font_size=10.5, line_height=_LH_OPTION)

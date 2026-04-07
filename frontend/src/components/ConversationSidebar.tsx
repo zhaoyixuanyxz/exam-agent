@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 const API = "";
+const URL_CID_PARAM = "c";
+
+function openConversationInNewTab(id: string) {
+  const path = `${window.location.pathname}?${URL_CID_PARAM}=${encodeURIComponent(id)}`;
+  window.open(path, "_blank", "noopener,noreferrer");
+}
 
 export type ConversationListItem = {
   id: string;
@@ -13,6 +19,8 @@ export type ConversationListItem = {
 type Props = {
   activeId: string;
   refreshKey: number;
+  /** 后台流式生成中的会话 id（可与当前选中不同） */
+  generatingIds?: string[];
   onSelect: (id: string) => void;
   onNewChat: () => Promise<void>;
   /** 删除成功后调用；若删掉的是当前会话，由父组件切换 activeId。 */
@@ -40,6 +48,7 @@ function formatShortDate(iso: string | null): string {
 export function ConversationSidebar({
   activeId,
   refreshKey,
+  generatingIds = [],
   onSelect,
   onNewChat,
   onDeleted,
@@ -109,7 +118,7 @@ export function ConversationSidebar({
             ＋ 新对话
           </button>
           <p className="text-xs leading-snug text-slate-500">
-            误关页面后，可在此回到历史会话并继续查看生成文件。
+            切换会话时当前生成可在后台继续（列表显示「生成中」）。↗ 可在新标签页并行打开会话。
           </p>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
@@ -120,6 +129,7 @@ export function ConversationSidebar({
           <ul className="flex flex-col gap-1">
             {items.map((c) => {
               const active = c.id === activeId;
+              const generating = generatingIds.includes(c.id);
               return (
                 <li key={c.id}>
                   <div
@@ -140,9 +150,24 @@ export function ConversationSidebar({
                       <span className="line-clamp-2 text-slate-800">{c.preview}</span>
                       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
                         <span>{formatShortDate(c.last_activity_at)}</span>
+                        {generating && (
+                          <span className="font-medium text-violet-600">生成中</span>
+                        )}
                         {c.message_count > 0 && <span>{c.message_count} 条消息</span>}
                         {c.paper_count > 0 && <span>{c.paper_count} 份材料</span>}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 px-1.5 text-slate-400 opacity-70 transition hover:text-sky-600 hover:opacity-100"
+                      title="新标签页打开此会话（可并行生成）"
+                      aria-label="新标签页打开此会话"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openConversationInNewTab(c.id);
+                      }}
+                    >
+                      ↗
                     </button>
                     <button
                       type="button"

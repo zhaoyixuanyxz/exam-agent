@@ -2,12 +2,31 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Chat } from "./components/Chat";
 import { ConversationSidebar } from "./components/ConversationSidebar";
+import { StreamJobsProvider, useStreamJobs } from "./context/StreamJobsContext";
 
 const STORAGE_KEY = "exam-agent-active-cid";
+const URL_CID_PARAM = "c";
 
-export default function App() {
+function readCidFromUrl(): string | null {
+  try {
+    const raw = new URLSearchParams(window.location.search).get(URL_CID_PARAM)?.trim();
+    if (!raw) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function replaceUrlWithCid(cid: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(URL_CID_PARAM, cid);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function AppInner() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [listRefreshKey, setListRefreshKey] = useState(0);
+  const { abortJob, generatingIds } = useStreamJobs();
 
   const bumpSidebar = useCallback(() => {
     setListRefreshKey((k) => k + 1);
@@ -20,8 +39,15 @@ export default function App() {
         const listRes = await fetch("/api/conversations");
         const data = await listRes.json();
         const items = (data.conversations || []) as { id: string }[];
-        const stored = localStorage.getItem(STORAGE_KEY);
         if (cancelled) return;
+
+        const fromUrl = readCidFromUrl();
+        if (fromUrl && items.some((c) => c.id === fromUrl)) {
+          setConversationId(fromUrl);
+          return;
+        }
+
+        const stored = localStorage.getItem(STORAGE_KEY);
         if (stored && items.some((c) => c.id === stored)) {
           setConversationId(stored);
           return;
@@ -42,7 +68,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (conversationId) localStorage.setItem(STORAGE_KEY, conversationId);
+    if (conversationId) {
+      localStorage.setItem(STORAGE_KEY, conversationId);
+      replaceUrlWithCid(conversationId);
+    }
   }, [conversationId]);
 
   const handleNewChat = useCallback(async () => {
@@ -53,6 +82,7 @@ export default function App() {
 
   const handleDeleted = useCallback(
     async (deletedId: string) => {
+      abortJob(deletedId);
       if (deletedId !== conversationId) return;
       const listRes = await fetch("/api/conversations");
       const data = await listRes.json();
@@ -64,7 +94,7 @@ export default function App() {
       const c = await fetch("/api/conversations", { method: "POST" }).then((r) => r.json());
       setConversationId(c.conversation_id as string);
     },
-    [conversationId],
+    [abortJob, conversationId],
   );
 
   if (!conversationId) {
@@ -80,13 +110,26 @@ export default function App() {
       <ConversationSidebar
         activeId={conversationId}
         refreshKey={listRefreshKey}
+        generatingIds={generatingIds}
         onSelect={setConversationId}
         onNewChat={handleNewChat}
         onDeleted={(id) => void handleDeleted(id)}
       />
       <main className="min-w-0 flex-1">
-        <Chat conversationId={conversationId} onConversationActivity={bumpSidebar} />
+        <Chat
+          key={conversationId}
+          conversationId={conversationId}
+          onConversationActivity={bumpSidebar}
+        />
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StreamJobsProvider>
+      <AppInner />
+    </StreamJobsProvider>
   );
 }

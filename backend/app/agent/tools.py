@@ -13,8 +13,8 @@ from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, Stru
 from app.services.export_markdown import build_knowledge_markdown
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
 from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
-from app.services.practice_clamp import clamp_practice_set
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
+from app.services.practice_paper_figures import collect_order_index_to_image_paths
 from app.services.storage import export_dir_for_conversation
 
 
@@ -139,9 +139,13 @@ def generate_chunk_practice_pdf(
     paper_id: str,
     knowledge_point_key: str,
     question_count: int = 10,
+    use_original_figures: bool = False,
+    include_figures: bool = True,
 ) -> str:
     """生成分块练习 PDF 与参考答案 PDF（默认 10 题；question_count 为正整数，题量多时会自动分批出题）。
-    knowledge_point_key 可为分析结果里的英文 key，或与列表一致的考点中文名称。"""
+    knowledge_point_key 可为分析结果里的英文 key，或与列表一致的考点中文名称。
+    use_original_figures：为 true 时在提示中附带原卷附图索引，并在 PDF 中尝试嵌入（须结构化试卷含 image_ref）。
+    include_figures：为 false 时不插入任何配图（仅文本）。"""
     with sync_session() as session:
         p = _get_paper(session, paper_id)
         if not p or not p.knowledge_analysis_json:
@@ -155,6 +159,16 @@ def generate_chunk_practice_pdf(
         grade = f"{align.get('grade_min', '?')}—{align.get('grade_max', '?')}"
         subject = str(align.get("subject", "数学"))
         n = max(1, int(question_count))
+        order_map: dict[int, list[str]] = {}
+        original_figure_hint: str | None = None
+        if p.parsed_json:
+            sp = StructuredPaper.model_validate(p.parsed_json)
+            order_map = collect_order_index_to_image_paths(sp)
+            if order_map:
+                original_figure_hint = "\n".join(
+                    f"  第{k}题: " + "；".join(paths[:12])
+                    for k, paths in sorted(order_map.items())
+                )
         try:
             practice = generate_practice_set(
                 kp.name,
@@ -162,20 +176,37 @@ def generate_chunk_practice_pdf(
                 subject,
                 grade,
                 n=n,
+                use_original_figures=use_original_figures,
+                include_figures=include_figures,
+                original_figure_hint=original_figure_hint,
             )
             practice.knowledge_point_key = kp.key
             practice.knowledge_point_name = kp.name
         except Exception as e:
             return tool_error_user_text("出题失败：", e)
-        practice = clamp_practice_set(practice)
         out_dir = export_dir_for_conversation(p.conversation_id)
         safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in kp.key)[:80]
         q_path = out_dir / f"practice_{safe}.pdf"
         a_path = out_dir / f"practice_{safe}_answers.pdf"
         title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
         try:
-            render_practice_pdf(practice, q_path, title=title, include_answers=False)
-            render_answer_pdf(practice, a_path, title=title)
+            render_practice_pdf(
+                practice,
+                q_path,
+                title=title,
+                include_answers=False,
+                include_figures=include_figures,
+                use_original_figures=use_original_figures,
+                order_index_to_paper_paths=order_map if use_original_figures else None,
+            )
+            render_answer_pdf(
+                practice,
+                a_path,
+                title=title,
+                include_figures=include_figures,
+                use_original_figures=use_original_figures,
+                order_index_to_paper_paths=order_map if use_original_figures else None,
+            )
         except Exception as e:
             return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
         for kind, path in (

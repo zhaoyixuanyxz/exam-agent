@@ -84,6 +84,32 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 运行 `pytest` 时，`tests\conftest.py` 会设置 `EXAM_AGENT_TEST_DB_PATH`，使用临时 SQLite 文件，**不会**覆盖你日常使用的 `data\app.db`。
 
+## 分块练习 PDF 支持的 figure_kind（概要）
+
+出题 JSON 中 `figure_kind` / `figure_spec` 经解析与 clamp 后，可由后端渲染并嵌入练习 PDF 的种类包括：`plot`（`fill_between`、`draw_as` line/scatter、`y_err`、可选 `series_right` 双 y 轴）、`bar`、`grouped_bar`、`pie`、`geometry`（点线标签及可选 `circles` / `polygons` / `arcs`；标签可选 `use_mathtext` 走 matplotlib **mathtext**，与正文 `_flatten_math_to_text` 不同）、`flowchart`（`layout`: `circular` | `layered`；节点可选 `use_mathtext`）、`force_diagram`（箭头 `label` 可选 `use_mathtext`）、`circuit_simple`、`svg`（内联 `<svg>...</svg>`，经消毒后以矢量嵌入 PDF）、`composite`（`panels` 内嵌下列**非 composite** 种类含 `svg`，至多 6 格；**svg 子图**需 **cairosvg + 系统 cairo** 栅格化，见下节）、`table`、`timeline`、`number_line`、`venn`、`histogram`，以及 **Phase 10** 学科配图：`solid_wireframe`（立几线框，`isometric`/`cabinet`；**Phase 11** 可选 `section_faces`、`auxiliary_edges`）、`field_lines`（手写 **lines**、可选 **presets** 点电荷/螺线管/长直导线示意、可选 **uniform_field**；三者至少其一）、`probability_tree`（单根概率树）、`pedigree`（遗传系谱）、`energy_profile`（能垒折线）、`electrochemical_cell`（原电池/电解池示意）、`unit_circle_trig`（单位圆与三角函数线）、`optics_ray`（**Phase 11**：`interface_orientation` horizontal/vertical/angled、可选主光轴与薄透镜符号；`rays` 非空），以及 **Phase 11** `directed_graph`（节点 `layer` + `layout` layered/circular，边可选 `label`）。**圆锥曲线 / 波动叠加**：无单独 kind，用高密度 `plot` 或 `composite` 组合（如 `plot` + `geometry` 标注）。**食物链/网**：优先 `directed_graph`（layered）或 `flowchart` + `layered`。详情以 [`app/services/paper_ai.py`](backend/app/services/paper_ai.py) 中 `_PRACTICE_SCHEMA` 与 [`app/models/schemas.py`](backend/app/models/schemas.py) 为准。非像素级烟测见 `tests/test_phase10_figure_kinds.py`、`tests/test_phase11_figure_gaps.py`。
+
+## 分块练习配图：cairosvg 与系统 cairo（composite 内 SVG 子图）
+
+`composite` 某一格为 `svg` 时，后端用 **cairosvg** 把该子图栅格成 PNG，再贴进整图；**默认依赖不包含 cairosvg**。安装与系统库如下（最短路径）。
+
+| 环境 | 步骤 |
+|------|------|
+| **Windows** | 在 `backend` 虚拟环境中：`pip install -e ".[svg]"`（或 `pip install cairosvg>=2.7`）。若导入或运行时报缺 **cairo-2.dll** / `OSError: no library called "cairo-2"`：需安装带 cairo 的运行库（常见做法：安装 [GTK3 Runtime](https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases) 并把其 `bin` 加入 PATH，或使用已打包好 cairo 的 Python 发行渠道）。**未就绪时**：该格会显示「(子图略)」，其余子图仍可出图；pytest 中带 composite+SVG 的用例会 `skip`。 |
+| **Linux (Debian/Ubuntu 等)** | `sudo apt install libcairo2-dev pkg-config`（或发行版等价包），再 `pip install -e ".[svg]"`。 |
+| **macOS** | `brew install cairo pango pkg-config`，再 `pip install -e ".[svg]"`。 |
+
+**无 cairo / cairosvg 时的预期**：composite 中非 SVG 子图正常；**仅 SVG 子图**为占位，与有 cairo 的机器对比同一份 JSON 时，composite 整图可能不同——属预期差异。
+
+### 彩印与出图默认值（Phase 9）
+
+- 程序配图默认 **DPI 168**（`practice_figure_render._FIG_DPI`），与 composite 内 SVG 栅格化一致；彩印可适当提高纸张质量设置，无需改代码即可受益。
+- 避免整版**浅 pastel 大色块**叠印发灰；示意填充与透明度已在默认渲染中收敛。
+- 线宽、字号、系列色以模块内常量为准（`PRINT_SERIES_PALETTE`、`LW_*`、`FS_*`）；大改版后可用 `tests/test_phase9_golden_figures.py`、`tests/test_phase10_figure_kinds.py`、`tests/test_phase11_figure_gaps.py` 做非像素级回归。
+
+### CI 建议
+
+若流水线镜像已含 cairo：安装 `.[svg]` 并跑全量 pytest。无 cairo 的 job 保持当前策略即可（composite SVG 用例 skip）。
+
 ## 仍无法解决时
 
 请保留完整终端输出（含报错栈），并说明：操作系统版本、Python/Node 版本、是否已配置 `.env`、失败命令是哪一条。
