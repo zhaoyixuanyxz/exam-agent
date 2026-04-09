@@ -12,6 +12,7 @@ from fpdf import FPDF
 from app.config import settings
 from app.models.schemas import PracticeQuestion, PracticeSet, PracticeSvgSpec
 from app.services.fonts import resolve_kaiti_font
+from app.services.pdf_latex_render import render_formula_to_png_result, should_render_with_latex
 from app.services.pdf_layout import (
     GAP_AFTER_FIG,
     GAP_AFTER_Q,
@@ -29,7 +30,7 @@ from app.services.pdf_layout import (
     layout_question_heading,
     spacing_after_question_block,
 )
-from app.services.pdf_math_inline import mathtext_inner_to_png_bytes
+from app.services.pdf_math_inline import render_formula_mathtext_to_png_bytes
 from app.services.pdf_math_replacements import (
     latex_inner_to_printable,
     replace_extensible_arrows,
@@ -39,6 +40,11 @@ from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
     append_figure_embed_record,
     log_figure_embed,
+)
+from app.services.practice_formula_diagnostics import (
+    FormulaRenderRecord,
+    append_formula_render_record,
+    log_formula_render,
 )
 from app.services.practice_path_security import resolve_under_data_dir
 from app.services.practice_svg_safe import sanitize_practice_svg
@@ -160,6 +166,209 @@ def _normalize_choice_key(s: str) -> str:
     return re.sub(r"\s+", "", _flatten_math_to_text(s))
 
 
+def _latex_subsystem_enabled() -> bool:
+    return (settings.practice_pdf_latex_renderer or "off").lower() in ("katex", "tex")
+
+
+def _hybrid_formula_line_enabled() -> bool:
+    return bool(settings.practice_pdf_inline_mathtext) or _latex_subsystem_enabled()
+
+
+def _math_segments_one_line(line: str) -> list[tuple[str, str]]:
+    """将一行拆成 (text|inline|display, 片段)。"""
+    out: list[tuple[str, str]] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        if line.startswith("$$", i):
+            j = line.find("$$", i + 2)
+            if j < 0:
+                out.append(("text", line[i:]))
+                break
+            out.append(("display", line[i + 2 : j]))
+            i = j + 2
+            continue
+        if line[i] == "$":
+            j = line.find("$", i + 1)
+            if j < 0:
+                out.append(("text", line[i:]))
+                break
+            out.append(("inline", line[i + 1 : j]))
+            i = j + 1
+            continue
+        j = line.find("$", i)
+        if j < 0:
+            if i < n:
+                out.append(("text", line[i:]))
+            break
+        if j > i:
+            out.append(("text", line[i:j]))
+        i = j
+    return out
+
+
+def _record_formula_render(
+    sink: list[FormulaRenderRecord] | None,
+    *,
+    order_index: int | None,
+    section: str,
+    outcome: str,
+    reason_code: str,
+    renderer: str,
+    inner_len: int,
+    cache_hit: bool,
+    duration_ms: float | None,
+) -> None:
+    log_formula_render(
+        logger,
+        order_index=order_index,
+        section=section,
+        outcome=outcome,
+        reason_code=reason_code,
+        renderer=renderer,
+        inner_len=inner_len,
+        cache_hit=cache_hit,
+        duration_ms=duration_ms,
+    )
+    append_formula_render_record(
+        sink,
+        order_index=order_index,
+        section=section,
+        outcome=outcome,
+        reason_code=reason_code,
+        renderer=renderer,
+        inner_len=inner_len,
+        cache_hit=cache_hit,
+        duration_ms=duration_ms,
+    )
+
+
+def _write_line_with_formula_segments(
+    pdf: RicePDF,
+    line: str,
+    w: float,
+    font_size: int,
+    line_height: float,
+    *,
+    order_index: int | None,
+    section: str,
+    formula_diag_sink: list[FormulaRenderRecord] | None,
+) -> bool:
+    """
+    含 $...$ / $$...$$ 的一行：LaTeX 子系统（分流命中）→ mathtext → Unicode。
+    与旧版 mathtext 一致：无法排入当前行宽时返回 False。
+    """
+    pdf.set_font("KaiTi", "", font_size)
+    row_y = pdf.get_y()
+    x = pdf.l_margin
+    x_max = pdf.w - pdf.r_margin
+    use_latex = _latex_subsystem_enabled()
+    use_mt = bool(settings.practice_pdf_inline_mathtext)
+    fb = (settings.practice_pdf_latex_fallback or "flatten").lower()
+    placeholder = "（公式略）"
+
+    segments = _math_segments_one_line(line)
+    for kind, raw_chunk in segments:
+        if kind == "text":
+            frag = _flatten_math_to_text(raw_chunk)
+            if not frag:
+                continue
+            tw = pdf.get_string_width(frag)
+            if x + tw > x_max + 1e-6 and x > pdf.l_margin:
+                return False
+            pdf.set_xy(x, row_y)
+            pdf.cell(tw, line_height, frag)
+            x = pdf.get_x()
+            continue
+
+        inn = (raw_chunk or "").strip()
+        is_display = kind == "display"
+        png: bytes | None = None
+        renderer_used = (settings.practice_pdf_latex_renderer or "off").lower()
+        latex_attempted = bool(
+            use_latex and inn and should_render_with_latex(inn, display_block=is_display)
+        )
+
+        if latex_attempted:
+            res = render_formula_to_png_result(inn, display_mode=is_display)
+            png = res.png
+            _record_formula_render(
+                formula_diag_sink,
+                order_index=order_index,
+                section=section,
+                outcome="ok" if png else "failed",
+                reason_code=res.reason_code,
+                renderer=res.renderer_used,
+                inner_len=len(inn),
+                cache_hit=res.cache_hit,
+                duration_ms=res.duration_ms,
+            )
+        elif use_latex and inn:
+            _record_formula_render(
+                formula_diag_sink,
+                order_index=order_index,
+                section=section,
+                outcome="skipped",
+                reason_code="router_skip",
+                renderer=renderer_used,
+                inner_len=len(inn),
+                cache_hit=False,
+                duration_ms=None,
+            )
+
+        if png is None and use_mt and inn and not is_display:
+            png = render_formula_mathtext_to_png_bytes(inn, fontsize_pt=float(font_size))
+            if png:
+                _record_formula_render(
+                    formula_diag_sink,
+                    order_index=order_index,
+                    section=section,
+                    outcome="ok",
+                    reason_code="mathtext",
+                    renderer="mathtext",
+                    inner_len=len(inn),
+                    cache_hit=False,
+                    duration_ms=None,
+                )
+
+        if png is not None:
+            if x_max - x < 8 and not is_display:
+                return False
+            if is_display:
+                if x > pdf.l_margin + 1e-6:
+                    row_y += line_height
+                    pdf.set_xy(pdf.l_margin, row_y)
+                    x = pdf.l_margin
+                pdf.set_xy(pdf.l_margin, row_y)
+                pdf.image(io.BytesIO(png), x=pdf.l_margin, y=row_y, w=w, h=0)
+                row_y += line_height * 4.0
+                pdf.set_xy(pdf.l_margin, row_y)
+                x = pdf.l_margin
+            else:
+                pdf.set_xy(x, row_y)
+                pdf.image(io.BytesIO(png), x=x, y=row_y, h=line_height)
+                x = pdf.get_x()
+                if x > x_max + 1e-6:
+                    return False
+            continue
+
+        if not inn:
+            continue
+        if latex_attempted and not png and fb == "placeholder":
+            flat = placeholder
+        else:
+            flat = _latex_inner_to_printable(inn)
+        tw = pdf.get_string_width(flat)
+        if x + tw > x_max + 1e-6 and x > pdf.l_margin:
+            return False
+        pdf.set_xy(x, row_y)
+        pdf.cell(tw, line_height, flat)
+        x = pdf.get_x()
+
+    pdf.set_y(row_y + line_height)
+    return True
+
+
 def _format_practice_option_line(j: int, opt: str) -> str:
     label = chr(65 + j) if j < 26 else str(j + 1)
     inner = _strip_all_option_label_prefixes(opt, j)
@@ -170,7 +379,7 @@ def _format_practice_option_line(j: int, opt: str) -> str:
 
 
 def _stem_strip_trailing_inline_options(stem: str, options: list[str]) -> str:
-    """模型常把 A. B. C. D. 写在 stem 里，同时又填 options，PDF 会印两套。若末尾若干行与 options 一一对应则删掉。"""
+    """stem 末行若与 options 一一对应则删掉，避免 PDF 印两套选项。"""
     if not stem.strip() or not options:
         return stem
     lines = stem.splitlines()
@@ -186,7 +395,10 @@ def _stem_strip_trailing_inline_options(stem: str, options: list[str]) -> str:
         if body is None:
             return stem
         tail_bodies.append(body)
-    opt_keys = [_normalize_choice_key(_strip_all_option_label_prefixes(options[j], j)) for j in range(k)]
+    opt_keys = [
+        _normalize_choice_key(_strip_all_option_label_prefixes(options[j], j))
+        for j in range(k)
+    ]
     tail_keys = [_normalize_choice_key(b) for b in tail_bodies]
     if tail_keys == opt_keys:
         return "\n".join(lines[:-k]).rstrip()
@@ -199,45 +411,37 @@ def _try_write_line_with_inline_math(
     w: float,
     font_size: int,
     line_height: float,
+    *,
+    order_index: int | None = None,
+    section: str = "body",
+    formula_diag_sink: list[FormulaRenderRecord] | None = None,
 ) -> bool:
-    """含 $...$ 时尝试 mathtext 栅格内联；失败返回 False 由调用方走 Unicode 扁平化。"""
-    parts = re.split(r"(\$[^$]+\$)", line)
-    parts = [p for p in parts if p]
-    if not parts or not any(p.startswith("$") for p in parts):
+    """含 $...$ 的一行：与 _write_line_with_formula_segments 相同逻辑。"""
+    if "$" not in line:
         return False
-
-    pdf.set_font("KaiTi", "", font_size)
-    y0 = pdf.get_y()
-    x = pdf.l_margin
-    x_max = pdf.w - pdf.r_margin
-
-    for part in parts:
-        if part.startswith("$") and part.endswith("$") and len(part) >= 3:
-            inner = part[1:-1]
-            png = mathtext_inner_to_png_bytes(inner, fontsize_pt=float(font_size))
-            if not png:
-                return False
-            if x > pdf.l_margin and x + 8 > x_max:
-                return False
-            pdf.image(io.BytesIO(png), x=x, y=y0, h=line_height)
-            x = pdf.get_x()
-            continue
-        frag = _flatten_math_to_text(part)
-        if not frag:
-            continue
-        tw = pdf.get_string_width(frag)
-        if x + tw > x_max + 1e-6 and x > pdf.l_margin:
-            return False
-        pdf.set_xy(x, y0)
-        pdf.cell(tw, line_height, frag)
-        x = pdf.get_x()
-
-    pdf.set_y(y0 + line_height)
-    return True
+    return _write_line_with_formula_segments(
+        pdf,
+        line,
+        w,
+        font_size,
+        line_height,
+        order_index=order_index,
+        section=section,
+        formula_diag_sink=formula_diag_sink,
+    )
 
 
-def _write_paragraphs(pdf: RicePDF, text: str, *, font_size: int, line_height: float) -> None:
-    """按换行分段 multi_cell；可选 settings.practice_pdf_inline_mathtext 内联公式小图。"""
+def _write_paragraphs(
+    pdf: RicePDF,
+    text: str,
+    *,
+    font_size: int,
+    line_height: float,
+    question_order_index: int | None = None,
+    section: str = "body",
+    collect_formula_diagnostics: list[FormulaRenderRecord] | None = None,
+) -> None:
+    """按换行分段 multi_cell；可选 LaTeX 子系统 / mathtext 内联公式小图。"""
     pdf.set_font("KaiTi", "", font_size)
     pdf.set_text_color(30, 30, 30)
     w = pdf.epw
@@ -245,7 +449,7 @@ def _write_paragraphs(pdf: RicePDF, text: str, *, font_size: int, line_height: f
         "（本题题干缺少可显示文字，可能为题干为空或仅含无法展开的公式。请重新生成或编辑数据源。）"
     )
 
-    if settings.practice_pdf_inline_mathtext:
+    if _hybrid_formula_line_enabled():
         raw = _normalize_malformed_latex_tokens(text)
         norm = _normalize_whitespace_lines(raw)
         if not norm.strip():
@@ -254,7 +458,14 @@ def _write_paragraphs(pdf: RicePDF, text: str, *, font_size: int, line_height: f
             if not para.strip():
                 continue
             if "$" in para and _try_write_line_with_inline_math(
-                pdf, para, w, font_size, line_height
+                pdf,
+                para,
+                w,
+                font_size,
+                line_height,
+                order_index=question_order_index,
+                section=section,
+                formula_diag_sink=collect_formula_diagnostics,
             ):
                 pdf.ln(1)
                 continue
@@ -469,6 +680,7 @@ def render_practice_pdf(
     use_original_figures: bool = False,
     order_index_to_paper_paths: dict[int, list[str]] | None = None,
     collect_figure_diagnostics: list[FigureEmbedRecord] | None = None,
+    collect_formula_diagnostics: list[FormulaRenderRecord] | None = None,
 ) -> None:
     font_path = resolve_kaiti_font()
     pdf = RicePDF(font_path)
@@ -482,7 +694,15 @@ def render_practice_pdf(
         stem_pdf = q.stem
         if q.options and q.qtype in ("单选", "多选"):
             stem_pdf = _stem_strip_trailing_inline_options(stem_pdf, q.options)
-        _write_paragraphs(pdf, stem_pdf, font_size=11, line_height=LH_BODY)
+        _write_paragraphs(
+            pdf,
+            stem_pdf,
+            font_size=11,
+            line_height=LH_BODY,
+            question_order_index=q.order_index,
+            section="stem",
+            collect_formula_diagnostics=collect_formula_diagnostics,
+        )
 
         _embed_question_figure(
             pdf,
@@ -503,7 +723,15 @@ def render_practice_pdf(
 
         if include_answers and q.answer_outline:
             layout_answer_section_heading(pdf, w)
-            _write_paragraphs(pdf, q.answer_outline, font_size=10, line_height=LH_OPTION)
+            _write_paragraphs(
+                pdf,
+                q.answer_outline,
+                font_size=10,
+                line_height=LH_OPTION,
+                question_order_index=q.order_index,
+                section="answer_inline",
+                collect_formula_diagnostics=collect_formula_diagnostics,
+            )
             pdf.set_text_color(30, 30, 30)
             pdf.set_font("KaiTi", "", 11)
             pdf.ln(2)
@@ -521,6 +749,7 @@ def render_answer_pdf(
     use_original_figures: bool = False,
     order_index_to_paper_paths: dict[int, list[str]] | None = None,
     collect_figure_diagnostics: list[FigureEmbedRecord] | None = None,
+    collect_formula_diagnostics: list[FormulaRenderRecord] | None = None,
 ) -> None:
     font_path = resolve_kaiti_font()
     pdf = RicePDF(font_path)
@@ -541,7 +770,15 @@ def render_answer_pdf(
         )
         pdf.set_font("KaiTi", "", 10.5)
         pdf.set_text_color(0, 85, 45)
-        _write_paragraphs(pdf, q.answer_outline or "（略）", font_size=10.5, line_height=LH_OPTION)
+        _write_paragraphs(
+            pdf,
+            q.answer_outline or "（略）",
+            font_size=10.5,
+            line_height=LH_OPTION,
+            question_order_index=q.order_index,
+            section="answer",
+            collect_formula_diagnostics=collect_formula_diagnostics,
+        )
         pdf.set_text_color(30, 30, 30)
         spacing_after_question_block(pdf)
 

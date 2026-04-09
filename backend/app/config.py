@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -54,6 +55,26 @@ class Settings(BaseSettings):
     # 生成分块练习 PDF 时是否额外写出配图诊断 JSON（与 pdf 同目录）
     practice_pdf_write_figure_diagnostics: bool = False
 
+    # LaTeX 子系统：off Unicode；katex Playwright+CDN；tex pdflatex/xelatex+PyMuPDF
+    practice_pdf_latex_renderer: Literal["off", "katex", "tex"] = "off"
+    practice_pdf_latex_timeout_sec: float = 25.0
+    practice_pdf_latex_cache_dir: str = "cache/formula_png"
+    practice_pdf_latex_dpi: int = 160
+    practice_pdf_latex_fallback: Literal["flatten", "placeholder"] = "flatten"
+    practice_pdf_latex_max_inner_chars: int = 8000
+    # 分流：满足任一条件则尝试 LaTeX 渲染（renderer 非 off 时）；min_inner_len=0 表示仅用结构特征
+    practice_pdf_latex_router_min_inner_len: int = 120
+    practice_pdf_latex_router_max_brace_depth: int = 8
+    practice_pdf_latex_katex_css_url: str = (
+        "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    )
+    practice_pdf_latex_katex_js_url: str = (
+        "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+    )
+    practice_pdf_latex_pdflatex_cmd: str = "pdflatex"
+    practice_pdf_latex_xelatex_cmd: str = "xelatex"
+    practice_pdf_write_formula_diagnostics: bool = False
+
     @property
     def upload_dir(self) -> Path:
         p = self.data_dir / "uploads"
@@ -63,6 +84,12 @@ class Settings(BaseSettings):
     @property
     def export_dir(self) -> Path:
         p = self.data_dir / "exports"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def practice_pdf_latex_cache_path(self) -> Path:
+        p = (self.data_dir / (self.practice_pdf_latex_cache_dir or "cache/formula_png")).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 

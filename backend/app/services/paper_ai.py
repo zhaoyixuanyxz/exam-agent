@@ -183,6 +183,7 @@ def generate_practice_set(
         "为防输出截断：每题 stem 控制在约 400 汉字内，answer_outline 约 500 汉字内；"
         "解题步骤精炼，禁止在 JSON 字符串里再嵌套第二段 JSON 或 ``` 代码块。"
         "公式若在 $...$ 内写 LaTeX，JSON 字符串里每个反斜杠须双写（例：\\\\frac{a}{b}、\\\\angle ABC）。"
+        "复杂式子（多行对齐、cases、矩阵等）可使用标准 amsmath 环境（如 aligned、cases、bmatrix），服务端可选 KaTeX/TeX 栅格渲染。"
         "角度须写 $90^\\\\circ$ 或 $90^{\\\\circ}$，禁止写 ^\\\\wedge\\\\circ；分式与根式须写完整如 $\\\\frac{\\\\sqrt{2}}{2}$，勿输出裸 frac 与空根号。"
     )
 

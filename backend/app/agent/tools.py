@@ -19,6 +19,10 @@ from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
     write_figure_embed_records_json,
 )
+from app.services.practice_formula_diagnostics import (
+    FormulaRenderRecord,
+    write_formula_render_records_json,
+)
 from app.services.practice_paper_figures import collect_order_index_to_image_paths
 from app.services.storage import export_dir_for_conversation
 
@@ -196,7 +200,10 @@ def generate_chunk_practice_pdf(
         title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
         diag_practice: list[FigureEmbedRecord] = []
         diag_answers: list[FigureEmbedRecord] = []
+        diag_form_practice: list[FormulaRenderRecord] = []
+        diag_form_answers: list[FormulaRenderRecord] = []
         write_diag = bool(settings.practice_pdf_write_figure_diagnostics)
+        write_formula_diag = bool(settings.practice_pdf_write_formula_diagnostics)
         try:
             render_practice_pdf(
                 practice,
@@ -207,6 +214,7 @@ def generate_chunk_practice_pdf(
                 use_original_figures=use_original_figures,
                 order_index_to_paper_paths=order_map if use_original_figures else None,
                 collect_figure_diagnostics=diag_practice if write_diag else None,
+                collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
             )
             render_answer_pdf(
                 practice,
@@ -216,6 +224,7 @@ def generate_chunk_practice_pdf(
                 use_original_figures=use_original_figures,
                 order_index_to_paper_paths=order_map if use_original_figures else None,
                 collect_figure_diagnostics=diag_answers if write_diag else None,
+                collect_formula_diagnostics=diag_form_answers if write_formula_diag else None,
             )
             if write_diag:
                 write_figure_embed_records_json(
@@ -225,6 +234,15 @@ def generate_chunk_practice_pdf(
                 write_figure_embed_records_json(
                     out_dir / f"practice_{safe}_figure_diag_answers.json",
                     diag_answers,
+                )
+            if write_formula_diag:
+                write_formula_render_records_json(
+                    out_dir / f"practice_{safe}_formula_diag_practice.json",
+                    diag_form_practice,
+                )
+                write_formula_render_records_json(
+                    out_dir / f"practice_{safe}_formula_diag_answers.json",
+                    diag_form_answers,
                 )
         except Exception as e:
             return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"

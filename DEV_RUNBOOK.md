@@ -110,6 +110,21 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 若流水线镜像已含 cairo：安装 `.[svg]` 并跑全量 pytest。无 cairo 的 job 保持当前策略即可（composite SVG 用例 skip）。
 
+## 练习 PDF：LaTeX 公式子系统（可选 KaTeX / TeX）
+
+默认 **`PRACTICE_PDF_LATEX_RENDERER=off`**，行为与仅 Unicode 扁平化一致，无额外依赖。
+
+| 模式 | 说明 |
+|------|------|
+| **katex** | Python 可选依赖 `pip install -e ".[latex]"`，再执行 `playwright install chromium`。渲染时通过 **CDN** 加载 KaTeX 静态资源（需外网）。栅格 PNG 缓存在 `data/<PRACTICE_PDF_LATEX_CACHE_DIR>`。 |
+| **tex** | 本机安装 TeX Live / MiKTeX，`pdflatex` / `xelatex` 在 PATH；含中文内层时优先 `xelatex`。 |
+
+环境变量见仓库根目录 `.env.example`（`PRACTICE_PDF_LATEX_*`、`PRACTICE_PDF_WRITE_FORMULA_DIAGNOSTICS`）。
+
+与 **`PRACTICE_PDF_INLINE_MATHTEXT`** 同时开启时的优先级：**先 LaTeX 子系统（分流命中）→ 再 matplotlib mathtext → 再 Unicode 扁平化**。
+
+集成测试：`pytest -m katex`（需 `RUN_KATEX_INTEGRATION=1` 且已安装 Playwright 与浏览器）。
+
 ## 仍无法解决时
 
 请保留完整终端输出（含报错栈），并说明：操作系统版本、Python/Node 版本、是否已配置 `.env`、失败命令是哪一条。

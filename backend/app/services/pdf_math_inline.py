@@ -13,6 +13,16 @@ _MAX_INNER_CHARS = 56
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
+def render_formula_mathtext_to_png_bytes(
+    inner: str,
+    *,
+    fontsize_pt: float = 11.0,
+    dpi: int = 160,
+) -> bytes | None:
+    """与 LaTeX 子系统共用的 mathtext 栅格入口（matplotlib 子集）。"""
+    return mathtext_inner_to_png_bytes(inner, fontsize_pt=fontsize_pt, dpi=dpi)
+
+
 def mathtext_inner_to_png_bytes(
     inner: str,
     *,
