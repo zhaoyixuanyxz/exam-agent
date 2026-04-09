@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -56,3 +58,10 @@ def append_figure_embed_record(
             reason_code=reason_code,
         )
     )
+
+
+def write_figure_embed_records_json(path: Path, records: list[FigureEmbedRecord]) -> None:
+    """将配图嵌入记录写入 JSON（UTF-8），便于对照哪题未出图。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [r.to_dict() for r in records]
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

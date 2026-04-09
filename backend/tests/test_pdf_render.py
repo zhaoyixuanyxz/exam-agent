@@ -66,6 +66,58 @@ def test_flatten_math_broken_frac_sqrt_option():
     assert "frac" not in t.lower()
 
 
+def test_flatten_math_chemistry_arrows():
+    t = _flatten_math_to_text(
+        r"反应 $\mathrm{A} \rightarrow \mathrm{B}$，沉淀 $\downarrow$，气体 $\uparrow$，可逆 $\rightleftharpoons$"
+    )
+    assert "→" in t
+    assert "↓" in t
+    assert "↑" in t
+    assert "⇌" in t
+    assert "rightarrow" not in t.lower()
+    assert "downarrow" not in t.lower()
+
+
+def test_flatten_math_xrightarrow_biology_pathway():
+    """代谢路径常用 \\xrightarrow{...}；须在 $ 外与 $ 内均展开，避免剥成 xrightarrow。"""
+    raw = r"前体（白）\xrightarrow{基因A控制}中间（粉）\xrightarrow{基因B控制}终产物（红）。"
+    t = _flatten_math_to_text(raw)
+    assert "xrightarrow" not in t.lower()
+    assert "→（基因A控制）" in t
+    assert "→（基因B控制）" in t
+    wrapped = r"路径 $\xrightarrow{\mathrm{酶1}}$ 产物"
+    t2 = _flatten_math_to_text(wrapped)
+    assert "xrightarrow" not in t2.lower()
+    assert "→" in t2
+
+
+def test_flatten_math_cross_discipline_symbols():
+    """数理/集合/物化生常见符号与箭头勿漏英文命令名。"""
+    t = _flatten_math_to_text(
+        r"集合 $a\in A$，逻辑 $\forall x$，微分 $\partial f$，物化 $\hbar$，路径 $\overrightarrow{AB}$，"
+        r"映射 $\xmapsto{规则}$，化学 $\ce{H2SO4}$ 与 $\ce{CH4}$，"
+        r"算子 $\operatorname{span}$"
+    )
+    low = t.lower()
+    assert "∈" in t
+    assert "∀" in t
+    assert "∂" in t
+    assert "ℏ" in t
+    assert "overrightarrow" not in low
+    assert "xmapsto" not in low
+    assert "H₂SO₄" in t or "₂" in t
+    assert "CH₄" in t or "₄" in t
+    assert "operatorname" not in low
+    assert "span" in low
+
+
+def test_flatten_math_unknown_command_does_not_leak_name():
+    """未收录的 \\foo 整段删除，勿在正文留下 foo 英文命令名。"""
+    t = _flatten_math_to_text(r"已知 $\unknowncmd{保留内层}$ 成立")
+    assert "unknowncmd" not in t.lower()
+    assert "保留内层" in t
+
+
 def test_stem_strip_trailing_inline_options():
     stem = "如图，已知条件？\nA. 甲\nB. 乙\nC. 丙\nD. 丁"
     opts = ["甲", "乙", "丙", "丁"]
@@ -497,3 +549,57 @@ def test_collect_figure_diagnostics(tmp_path: Path):
     assert len(sink) == 1
     assert sink[0].outcome == "embedded_rendered_png"
     assert sink[0].figure_kind == "plot"
+
+
+def test_mathtext_inner_to_png_bytes_smoke():
+    from app.services.pdf_math_inline import mathtext_inner_to_png_bytes
+
+    b = mathtext_inner_to_png_bytes(r"x^2+y^2", fontsize_pt=11.0)
+    assert b is not None and len(b) > 80
+
+
+def test_mathtext_inner_rejects_cjk():
+    from app.services.pdf_math_inline import mathtext_inner_to_png_bytes
+
+    assert mathtext_inner_to_png_bytes(r"\text{中文}") is None
+
+
+def test_write_figure_embed_records_json(tmp_path: Path):
+    from app.services.practice_figure_diagnostics import (
+        FigureEmbedRecord,
+        write_figure_embed_records_json,
+    )
+
+    p = tmp_path / "fig.json"
+    write_figure_embed_records_json(
+        p,
+        [
+            FigureEmbedRecord(
+                order_index=2,
+                figure_kind="circuit_simple",
+                outcome="embedded_rendered_png",
+                reason_code="ok",
+            )
+        ],
+    )
+    raw = p.read_text(encoding="utf-8")
+    assert "circuit_simple" in raw
+    assert "order_index" in raw
+
+
+def test_write_paragraphs_inline_mathtext_line(monkeypatch, tmp_path: Path):
+    try:
+        resolve_kaiti_font()
+    except FileNotFoundError:
+        pytest.skip("本机未找到楷体，跳过 PDF 渲染测试（部署时请配置 KAITI_FONT_PATH）")
+    from app.config import settings
+    from app.services.pdf_render import RicePDF, _write_paragraphs
+
+    monkeypatch.setattr(settings, "practice_pdf_inline_mathtext", True)
+    font_path = resolve_kaiti_font()
+    pdf = RicePDF(font_path)
+    pdf.add_page()
+    _write_paragraphs(pdf, r"方程 $x^2+1=0$ 的解", font_size=11, line_height=8.2)
+    out = tmp_path / "inline.pdf"
+    pdf.output(out.as_posix())
+    assert out.is_file() and out.stat().st_size > 2000

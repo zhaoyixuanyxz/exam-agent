@@ -49,6 +49,11 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 50 * 1024 * 1024
 
+    # 练习 PDF：可选内联 mathtext 小图（题干/解析中含 $...$ 时尝试栅格嵌入）
+    practice_pdf_inline_mathtext: bool = False
+    # 生成分块练习 PDF 时是否额外写出配图诊断 JSON（与 pdf 同目录）
+    practice_pdf_write_figure_diagnostics: bool = False
+
     @property
     def upload_dir(self) -> Path:
         p = self.data_dir / "uploads"

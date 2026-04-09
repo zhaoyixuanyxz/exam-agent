@@ -12,3 +12,5 @@ dist/
 checkpoints.db
 .venv/
 venv/
+# setuptools / 本地安装产生的副本，勿入库
+backend/build/

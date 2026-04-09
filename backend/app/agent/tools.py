@@ -7,6 +7,7 @@ import json
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.models import Artifact, ExamPaper
 from app.db.sync_session import sync_session
 from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, StructuredPaper
@@ -14,6 +15,10 @@ from app.services.export_markdown import build_knowledge_markdown
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
 from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
+from app.services.practice_figure_diagnostics import (
+    FigureEmbedRecord,
+    write_figure_embed_records_json,
+)
 from app.services.practice_paper_figures import collect_order_index_to_image_paths
 from app.services.storage import export_dir_for_conversation
 
@@ -189,6 +194,9 @@ def generate_chunk_practice_pdf(
         q_path = out_dir / f"practice_{safe}.pdf"
         a_path = out_dir / f"practice_{safe}_answers.pdf"
         title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
+        diag_practice: list[FigureEmbedRecord] = []
+        diag_answers: list[FigureEmbedRecord] = []
+        write_diag = bool(settings.practice_pdf_write_figure_diagnostics)
         try:
             render_practice_pdf(
                 practice,
@@ -198,6 +206,7 @@ def generate_chunk_practice_pdf(
                 include_figures=include_figures,
                 use_original_figures=use_original_figures,
                 order_index_to_paper_paths=order_map if use_original_figures else None,
+                collect_figure_diagnostics=diag_practice if write_diag else None,
             )
             render_answer_pdf(
                 practice,
@@ -206,7 +215,17 @@ def generate_chunk_practice_pdf(
                 include_figures=include_figures,
                 use_original_figures=use_original_figures,
                 order_index_to_paper_paths=order_map if use_original_figures else None,
+                collect_figure_diagnostics=diag_answers if write_diag else None,
             )
+            if write_diag:
+                write_figure_embed_records_json(
+                    out_dir / f"practice_{safe}_figure_diag_practice.json",
+                    diag_practice,
+                )
+                write_figure_embed_records_json(
+                    out_dir / f"practice_{safe}_figure_diag_answers.json",
+                    diag_answers,
+                )
         except Exception as e:
             return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
         for kind, path in (

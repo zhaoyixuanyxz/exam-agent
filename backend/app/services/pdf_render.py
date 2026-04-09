@@ -9,8 +9,32 @@ from pathlib import Path
 
 from fpdf import FPDF
 
+from app.config import settings
 from app.models.schemas import PracticeQuestion, PracticeSet, PracticeSvgSpec
 from app.services.fonts import resolve_kaiti_font
+from app.services.pdf_layout import (
+    GAP_AFTER_FIG,
+    GAP_AFTER_Q,
+    GAP_BEFORE_FIG,
+    INDENT_OPT,
+    LH_BODY,
+    LH_CAPTION,
+    LH_OPTION,
+    LH_TITLE,
+    MIN_FIG_SPACE_MM,
+    ensure_room_for_figure,
+    layout_answer_section_heading,
+    layout_document_title,
+    layout_options_block,
+    layout_question_heading,
+    spacing_after_question_block,
+)
+from app.services.pdf_math_inline import mathtext_inner_to_png_bytes
+from app.services.pdf_math_replacements import (
+    latex_inner_to_printable,
+    replace_extensible_arrows,
+    replace_mhchem_ce_braces,
+)
 from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
     append_figure_embed_record,
@@ -24,83 +48,21 @@ logger = logging.getLogger(__name__)
 RICE = (250, 248, 245)
 WATERMARK = "朱老师私密资料，仅供参考！！"
 
-# 中文试卷阅读：行距略大、选项缩进
-_LH_TITLE = 11
-_LH_BODY = 8.2
-_LH_OPTION = 7.8
-_INDENT_OPT = 6.0
-_GAP_AFTER_Q = 5.0
-# 题干与选项之间可选插图（不改变题干/选项所用行高）
-_GAP_BEFORE_FIG = 3.0
-_GAP_AFTER_FIG = 2.0
-_LH_CAPTION = 7.0
-_MIN_FIG_SPACE_MM = 78.0
+# 兼容旧代码与测试：别名指向 pdf_layout 单源常量
+_LH_TITLE = LH_TITLE
+_LH_BODY = LH_BODY
+_LH_OPTION = LH_OPTION
+_INDENT_OPT = INDENT_OPT
+_GAP_AFTER_Q = GAP_AFTER_Q
+_GAP_BEFORE_FIG = GAP_BEFORE_FIG
+_GAP_AFTER_FIG = GAP_AFTER_FIG
+_LH_CAPTION = LH_CAPTION
+_MIN_FIG_SPACE_MM = MIN_FIG_SPACE_MM
 
 
 def _latex_inner_to_printable(s: str) -> str:
-    """把 $...$ 里的片段转成可楷体直排的近似写法（不再整段插图）。"""
-    t = s.strip()
-    # 模型常把角度写成 ^{\wedge}\circ 或 ^\wedge\circ，先规整为一度符号
-    t = re.sub(r"\^\{\\wedge\}\s*\\circ\b", "°", t)
-    t = re.sub(r"\^\wedge\s*\\circ\b", "°", t)
-    t = re.sub(r"\^\{\\wedge\}\s*circ\b", "°", t)
-    t = re.sub(r"\^\wedge\s*circ\b", "°", t)
-    # 选项里烂掉的 \frac{\sqrt{a}}{b}：变成「frac √{} 22」一类
-    t = re.sub(
-        r"(?i)frac\s*\$?\s*\\?sqrt\s*\{\s*\}\s*\$?\s*(\d)(\d)\b",
-        r"√\1/\2",
-        t,
-    )
-    t = re.sub(r"(?i)\bfrac\s+sqrt\s*\{\s*\}\s*(\d)(\d)\b", r"√\1/\2", t)
-    # 常见几何 / 运算（顺序：先长后短，避免误替换）
-    repl = (
-        (r"\\triangle", "△"),
-        (r"\\angle", "∠"),
-        (r"\\odot", "⊙"),
-        (r"\\perp", "⊥"),
-        (r"\\parallel", "∥"),
-        (r"\\rightarrow", "→"),
-        (r"\\Rightarrow", "⇒"),
-        (r"\\leq", "≤"),
-        (r"\\geq", "≥"),
-        (r"\\neq", "≠"),
-        (r"\\approx", "≈"),
-        (r"\\cong", "≅"),
-        (r"\\simeq", "≃"),
-        (r"\\infty", "∞"),
-        (r"\\cdot", "·"),
-        (r"\\times", "×"),
-        (r"\\div", "÷"),
-        (r"\\pm", "±"),
-        (r"\\pi", "π"),
-        (r"\\alpha", "α"),
-        (r"\\beta", "β"),
-        (r"\\gamma", "γ"),
-        (r"\\theta", "θ"),
-        (r"\\Delta", "Δ"),
-        (r"\\circ", "°"),
-        (r"\\degree", "°"),
-        (r"\\widehat", "⌢"),
-        (r"\\overline", "—"),
-        (r"\\sqrt", "√"),
-        (r"\\sum", "∑"),
-    )
-    for pat, ch in repl:
-        t = re.sub(pat, ch, t)
-    # ^{circ} / ^\circ（LaTeX 里是反斜杠，正则须写成 \\circ）
-    t = re.sub(r"\^\{\\circ\}", "°", t)
-    t = re.sub(r"\^\\circ", "°", t)
-    # 简单分式、根号（一层花括号）
-    t = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"(\1)/(\2)", t)
-    t = re.sub(r"\\sqrt\{([^{}]+)\}", r"√(\1)", t)
-    t = re.sub(r"\\text\{([^{}]*)\}", r"\1", t)
-    t = re.sub(r"\\mathrm\{([^{}]*)\}", r"\1", t)
-    t = re.sub(r"\\left|\\right|\\,|\\;|\\:|\\!", " ", t)
-    # 剩余 \word 去掉反斜杠前缀，避免满屏 "triangle"
-    t = re.sub(r"\\([a-zA-Z]+)", lambda m: m.group(1), t)
-    t = t.replace("{", "").replace("}", "")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t if t else " "
+    """把 $...$ 里的片段转成可楷体直排的近似写法；规则见 pdf_math_replacements。"""
+    return latex_inner_to_printable(s)
 
 
 def _normalize_malformed_latex_tokens(text: str) -> str:
@@ -129,6 +91,8 @@ def _flatten_math_to_text(text: str) -> str:
         return _latex_inner_to_printable(m.group(1))
 
     s = _normalize_malformed_latex_tokens(text)
+    s = replace_extensible_arrows(s)
+    s = replace_mhchem_ce_braces(s)
     s = re.sub(r"\$\$([^$]+)\$\$", repl_block, s, flags=re.DOTALL)
     s = re.sub(r"\$([^$]+)\$", repl_inline, s)
     return s
@@ -196,6 +160,15 @@ def _normalize_choice_key(s: str) -> str:
     return re.sub(r"\s+", "", _flatten_math_to_text(s))
 
 
+def _format_practice_option_line(j: int, opt: str) -> str:
+    label = chr(65 + j) if j < 26 else str(j + 1)
+    inner = _strip_all_option_label_prefixes(opt, j)
+    line = _flatten_math_to_text(inner)
+    if not line.strip():
+        line = "（选项内容为空）"
+    return f"{label}. {line}"
+
+
 def _stem_strip_trailing_inline_options(stem: str, options: list[str]) -> str:
     """模型常把 A. B. C. D. 写在 stem 里，同时又填 options，PDF 会印两套。若末尾若干行与 options 一一对应则删掉。"""
     if not stem.strip() or not options:
@@ -220,15 +193,82 @@ def _stem_strip_trailing_inline_options(stem: str, options: list[str]) -> str:
     return stem
 
 
+def _try_write_line_with_inline_math(
+    pdf: RicePDF,
+    line: str,
+    w: float,
+    font_size: int,
+    line_height: float,
+) -> bool:
+    """含 $...$ 时尝试 mathtext 栅格内联；失败返回 False 由调用方走 Unicode 扁平化。"""
+    parts = re.split(r"(\$[^$]+\$)", line)
+    parts = [p for p in parts if p]
+    if not parts or not any(p.startswith("$") for p in parts):
+        return False
+
+    pdf.set_font("KaiTi", "", font_size)
+    y0 = pdf.get_y()
+    x = pdf.l_margin
+    x_max = pdf.w - pdf.r_margin
+
+    for part in parts:
+        if part.startswith("$") and part.endswith("$") and len(part) >= 3:
+            inner = part[1:-1]
+            png = mathtext_inner_to_png_bytes(inner, fontsize_pt=float(font_size))
+            if not png:
+                return False
+            if x > pdf.l_margin and x + 8 > x_max:
+                return False
+            pdf.image(io.BytesIO(png), x=x, y=y0, h=line_height)
+            x = pdf.get_x()
+            continue
+        frag = _flatten_math_to_text(part)
+        if not frag:
+            continue
+        tw = pdf.get_string_width(frag)
+        if x + tw > x_max + 1e-6 and x > pdf.l_margin:
+            return False
+        pdf.set_xy(x, y0)
+        pdf.cell(tw, line_height, frag)
+        x = pdf.get_x()
+
+    pdf.set_y(y0 + line_height)
+    return True
+
+
 def _write_paragraphs(pdf: RicePDF, text: str, *, font_size: int, line_height: float) -> None:
-    """按换行分段 multi_cell，整段可读。"""
+    """按换行分段 multi_cell；可选 settings.practice_pdf_inline_mathtext 内联公式小图。"""
     pdf.set_font("KaiTi", "", font_size)
     pdf.set_text_color(30, 30, 30)
     w = pdf.epw
+    placeholder = (
+        "（本题题干缺少可显示文字，可能为题干为空或仅含无法展开的公式。请重新生成或编辑数据源。）"
+    )
+
+    if settings.practice_pdf_inline_mathtext:
+        raw = _normalize_malformed_latex_tokens(text)
+        norm = _normalize_whitespace_lines(raw)
+        if not norm.strip():
+            norm = placeholder
+        for para in norm.split("\n"):
+            if not para.strip():
+                continue
+            if "$" in para and _try_write_line_with_inline_math(
+                pdf, para, w, font_size, line_height
+            ):
+                pdf.ln(1)
+                continue
+            flat = _flatten_math_to_text(para)
+            if not (flat or "").strip():
+                flat = "（…）"
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(w, line_height, flat, align="L")
+            pdf.ln(1)
+        return
+
     body = _normalize_whitespace_lines(_flatten_math_to_text(text))
     if not body:
-        body = "（本题题干缺少可显示文字，可能为题干为空或仅含无法展开的公式。请重新生成或编辑数据源。）"
-    # fpdf2 multi_cell 默认为两端对齐 J，中英混排时会把一行拉得很散；左对齐与日常试卷观感一致。
+        body = placeholder
     for para in body.split("\n"):
         pdf.set_x(pdf.l_margin)
         pdf.multi_cell(w, line_height, para, align="L")
@@ -282,7 +322,7 @@ def _write_figure_caption_pdf(pdf: RicePDF, content_width: float, caption: str) 
     pdf.set_font("KaiTi", "", 9)
     pdf.set_text_color(55, 55, 55)
     pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(content_width, _LH_CAPTION, cap, align="L")
+    pdf.multi_cell(content_width, LH_CAPTION, cap, align="L")
     pdf.set_text_color(30, 30, 30)
     pdf.ln(1)
 
@@ -295,11 +335,10 @@ def _embed_svg_vector(
     order_index: int,
 ) -> bool:
     try:
-        pdf.ln(_GAP_BEFORE_FIG)
-        if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
-            pdf.add_page()
+        pdf.ln(GAP_BEFORE_FIG)
+        ensure_room_for_figure(pdf)
         pdf.image(io.BytesIO(svg_utf8.encode("utf-8")), x=pdf.l_margin, w=content_width)
-        pdf.ln(_GAP_AFTER_FIG)
+        pdf.ln(GAP_AFTER_FIG)
         return True
     except Exception as e:
         logger.debug(
@@ -351,11 +390,10 @@ def _embed_question_figure(
             suf = p_path.suffix.lower()
             if suf in (".png", ".jpg", ".jpeg", ".gif"):
                 try:
-                    pdf.ln(_GAP_BEFORE_FIG)
-                    if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
-                        pdf.add_page()
+                    pdf.ln(GAP_BEFORE_FIG)
+                    ensure_room_for_figure(pdf)
                     pdf.image(p_path.as_posix(), x=pdf.l_margin, w=content_width)
-                    pdf.ln(_GAP_AFTER_FIG)
+                    pdf.ln(GAP_AFTER_FIG)
                 except Exception as e:
                     logger.debug(
                         "practice_pdf: paper image embed failed (order_index=%s)",
@@ -411,12 +449,11 @@ def _embed_question_figure(
         _emit("render_failed", reason)
         return
 
-    pdf.ln(_GAP_BEFORE_FIG)
-    if pdf.get_y() + _MIN_FIG_SPACE_MM > pdf.h - pdf.b_margin:
-        pdf.add_page()
+    pdf.ln(GAP_BEFORE_FIG)
+    ensure_room_for_figure(pdf)
 
     pdf.image(io.BytesIO(png), x=pdf.l_margin, w=content_width)
-    pdf.ln(_GAP_AFTER_FIG)
+    pdf.ln(GAP_AFTER_FIG)
 
     _write_figure_caption_pdf(pdf, content_width, q.figure_spec.caption)
     _emit("embedded_rendered_png", paper_ctx or "ok")
@@ -437,26 +474,15 @@ def render_practice_pdf(
     pdf = RicePDF(font_path)
     pdf.add_page()
     w = pdf.epw
-    pdf.set_font("KaiTi", "", 15)
-    pdf.set_text_color(35, 35, 35)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(w, _LH_TITLE, title, align="L")
-    pdf.set_draw_color(200, 200, 200)
-    pdf.set_line_width(0.2)
-    pdf.line(pdf.l_margin, pdf.get_y() + 1.5, pdf.w - pdf.r_margin, pdf.get_y() + 1.5)
-    pdf.ln(5)
+    layout_document_title(pdf, w, title)
 
     for q in practice.questions:
-        pdf.set_font("KaiTi", "", 11)
-        pdf.set_text_color(20, 60, 120)
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(w, _LH_BODY, f"第 {q.order_index} 题　【{q.qtype}】", align="L")
-        pdf.ln(1)
+        layout_question_heading(pdf, w, q.order_index, q.qtype)
         pdf.set_text_color(30, 30, 30)
         stem_pdf = q.stem
         if q.options and q.qtype in ("单选", "多选"):
             stem_pdf = _stem_strip_trailing_inline_options(stem_pdf, q.options)
-        _write_paragraphs(pdf, stem_pdf, font_size=11, line_height=_LH_BODY)
+        _write_paragraphs(pdf, stem_pdf, font_size=11, line_height=LH_BODY)
 
         _embed_question_figure(
             pdf,
@@ -469,28 +495,15 @@ def render_practice_pdf(
         )
 
         if q.options:
-            pdf.ln(1)
-            pdf.set_font("KaiTi", "", 10.5)
-            pdf.set_text_color(45, 45, 45)
-            for j, opt in enumerate(q.options):
-                label = chr(65 + j) if j < 26 else str(j + 1)
-                inner = _strip_all_option_label_prefixes(opt, j)
-                line = _flatten_math_to_text(inner)
-                if not line.strip():
-                    line = "（选项内容为空）"
-                pdf.set_x(pdf.l_margin + _INDENT_OPT)
-                pdf.multi_cell(w - _INDENT_OPT, _LH_OPTION, f"{label}. {line}", align="L")
-            pdf.set_text_color(30, 30, 30)
+            layout_options_block(
+                pdf, w, q.options, format_option_line=_format_practice_option_line
+            )
 
-        pdf.ln(_GAP_AFTER_Q)
+        spacing_after_question_block(pdf)
 
         if include_answers and q.answer_outline:
-            pdf.set_font("KaiTi", "", 10)
-            pdf.set_text_color(0, 95, 55)
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(w, _LH_OPTION, "【参考答案】", align="L")
-            pdf.ln(0.5)
-            _write_paragraphs(pdf, q.answer_outline, font_size=10, line_height=_LH_OPTION)
+            layout_answer_section_heading(pdf, w)
+            _write_paragraphs(pdf, q.answer_outline, font_size=10, line_height=LH_OPTION)
             pdf.set_text_color(30, 30, 30)
             pdf.set_font("KaiTi", "", 11)
             pdf.ln(2)
@@ -513,20 +526,10 @@ def render_answer_pdf(
     pdf = RicePDF(font_path)
     pdf.add_page()
     w = pdf.epw
-    pdf.set_font("KaiTi", "", 15)
-    pdf.set_text_color(35, 35, 35)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(w, _LH_TITLE, title + " — 参考答案", align="L")
-    pdf.set_draw_color(200, 200, 200)
-    pdf.line(pdf.l_margin, pdf.get_y() + 1.5, pdf.w - pdf.r_margin, pdf.get_y() + 1.5)
-    pdf.ln(5)
+    layout_document_title(pdf, w, title, title_suffix=" — 参考答案")
 
     for q in practice.questions:
-        pdf.set_font("KaiTi", "", 11)
-        pdf.set_text_color(20, 60, 120)
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(w, _LH_BODY, f"第 {q.order_index} 题　【{q.qtype}】", align="L")
-        pdf.ln(1)
+        layout_question_heading(pdf, w, q.order_index, q.qtype)
         _embed_question_figure(
             pdf,
             w,
@@ -538,9 +541,9 @@ def render_answer_pdf(
         )
         pdf.set_font("KaiTi", "", 10.5)
         pdf.set_text_color(0, 85, 45)
-        _write_paragraphs(pdf, q.answer_outline or "（略）", font_size=10.5, line_height=_LH_OPTION)
+        _write_paragraphs(pdf, q.answer_outline or "（略）", font_size=10.5, line_height=LH_OPTION)
         pdf.set_text_color(30, 30, 30)
-        pdf.ln(_GAP_AFTER_Q)
+        spacing_after_question_block(pdf)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(out_path.as_posix())

@@ -78,7 +78,19 @@ from app.models.schemas import (
     PracticeUnitCircleTrigSpec,
     PracticeVennSpec,
 )
+from app.services.practice_circuit_display_labels import circuit_node_label_for_display
+from app.services.practice_figure_text_sanitize import figure_matplotlib_plain_text
 from app.services.practice_figure_field_presets import expand_field_line_presets
+from app.services.practice_figure_theme import (
+    Z_ARROW_HIGH,
+    Z_FILL_PATCH,
+    Z_GEOM_SEGMENT,
+    Z_GRID,
+    Z_SCATTER_POINT,
+    Z_SYMBOL_GEOM,
+    Z_WIRE,
+    text_with_halo,
+)
 from app.services.practice_figure_primitives import (
     project_vertex_cabinet,
     project_vertex_isometric,
@@ -713,11 +725,16 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
                     edgecolor=ec,
                     linewidth=LW_GEOM,
                     alpha=pa,
-                    zorder=0,
+                    zorder=Z_FILL_PATCH,
                 )
             else:
                 patch = Polygon(
-                    arr, closed=True, facecolor="none", edgecolor=ec, linewidth=LW_GEOM, zorder=0
+                    arr,
+                    closed=True,
+                    facecolor="none",
+                    edgecolor=ec,
+                    linewidth=LW_GEOM,
+                    zorder=Z_FILL_PATCH,
                 )
             ax.add_patch(patch)
 
@@ -732,10 +749,17 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
             ec = _geom_edge_color(c.edge_color)
             if c.fill:
                 fc = _geom_fill_color(c.fill_color)
-                patch = Circle((cx, cy), r, facecolor=fc, edgecolor=ec, linewidth=LW_GEOM, zorder=0)
+                patch = Circle(
+                    (cx, cy), r, facecolor=fc, edgecolor=ec, linewidth=LW_GEOM, zorder=Z_FILL_PATCH
+                )
             else:
                 patch = Circle(
-                    (cx, cy), r, facecolor="none", edgecolor=ec, linewidth=LW_GEOM, zorder=0
+                    (cx, cy),
+                    r,
+                    facecolor="none",
+                    edgecolor=ec,
+                    linewidth=LW_GEOM,
+                    zorder=Z_FILL_PATCH,
                 )
             ax.add_patch(patch)
 
@@ -760,7 +784,7 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
                     edgecolor=ec,
                     linewidth=LW_GEOM,
                     alpha=_GEOM_WEDGE_ALPHA,
-                    zorder=0,
+                    zorder=Z_FILL_PATCH,
                 )
                 ax.add_patch(w)
             else:
@@ -772,7 +796,7 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
                     theta2=t2,
                     edgecolor=ec,
                     linewidth=LW_GEOM,
-                    zorder=0,
+                    zorder=Z_FILL_PATCH,
                 )
                 ax.add_patch(arc)
 
@@ -788,7 +812,13 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
                 continue
             x0, y0 = id_to_xy[a]
             x1, y1 = id_to_xy[b]
-            ax.plot([x0, x1], [y0, y1], color=EDGE_NEUTRAL, linewidth=LW_GEOM, zorder=1)
+            ax.plot(
+                [x0, x1],
+                [y0, y1],
+                color=EDGE_NEUTRAL,
+                linewidth=LW_GEOM,
+                zorder=Z_GEOM_SEGMENT,
+            )
 
         if has_pts:
             px = [id_to_xy[k][0] for k in id_to_xy]
@@ -800,9 +830,10 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
                 color=PRINT_SERIES_PALETTE[0],
                 edgecolors=EDGE_NEUTRAL,
                 linewidths=0.55,
-                zorder=2,
+                zorder=Z_SCATTER_POINT,
             )
 
+        geom_label_entries: list[tuple[float, float, str, str]] = []
         for lb in spec.labels:
             t = (lb.text or "").strip()
             if not t:
@@ -813,28 +844,7 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
             disp = _mpl_label(t, use_mathtext=lb.use_mathtext)
             if not _use_mathtext_effective(lb.use_mathtext, t):
                 disp = _short_tick_label(disp, max_len=_MAX_GEOM_LABEL_CHARS)
-            try:
-                ax.text(
-                    lx,
-                    ly,
-                    disp,
-                    fontsize=FS_SUBPLOT,
-                    ha="center",
-                    va="center",
-                    color=TEXT_PRIMARY,
-                    zorder=3,
-                )
-            except Exception:
-                ax.text(
-                    lx,
-                    ly,
-                    _short_tick_label(_mpl_plain(t), max_len=_MAX_GEOM_LABEL_CHARS),
-                    fontsize=FS_SUBPLOT,
-                    ha="center",
-                    va="center",
-                    color=TEXT_PRIMARY,
-                    zorder=3,
-                )
+            geom_label_entries.append((lx, ly, disp, t))
 
         if spec.title.strip():
             ax.set_title(_mpl_plain(spec.title.strip()), fontsize=FS_TITLE)
@@ -851,8 +861,30 @@ def render_geometry_to_png_bytes(spec: PracticeGeometrySpec) -> bytes | None:
             ax.set_xlim(cx_ - half_data, cx_ + half_data)
             ax.set_ylim(cy_ - half_data, cy_ + half_data)
         ax.set_aspect("equal", adjustable="datalim")
-        ax.grid(True, linestyle="--", alpha=_GRID_ALPHA * 0.72)
+        ax.grid(True, linestyle="--", alpha=_GRID_ALPHA * 0.72, zorder=Z_GRID)
         fig.tight_layout()
+
+        for lx, ly, disp, t in geom_label_entries:
+            try:
+                text_with_halo(
+                    ax,
+                    lx,
+                    ly,
+                    disp,
+                    fontsize=FS_SUBPLOT,
+                    color=TEXT_PRIMARY,
+                    bbox_pad=0.2,
+                )
+            except Exception:
+                text_with_halo(
+                    ax,
+                    lx,
+                    ly,
+                    _short_tick_label(_mpl_plain(t), max_len=_MAX_GEOM_LABEL_CHARS),
+                    fontsize=FS_SUBPLOT,
+                    color=TEXT_PRIMARY,
+                    bbox_pad=0.2,
+                )
 
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=_FIG_DPI, bbox_inches="tight", facecolor="white")
@@ -1248,6 +1280,7 @@ def render_force_diagram_to_png_bytes(spec: PracticeForceDiagramSpec) -> bytes |
                 zorder=1,
             )
 
+        force_label_entries: list[tuple[float, float, str, str]] = []
         for i, f in enumerate(spec.forces):
             col = (f.color or "").strip() or PRINT_SERIES_PALETTE[i % len(PRINT_SERIES_PALETTE)]
             z = max(1, min(5, int(f.zorder)))
@@ -1258,7 +1291,7 @@ def render_force_diagram_to_png_bytes(spec: PracticeForceDiagramSpec) -> bytes |
                 mutation_scale=14,
                 linewidth=LW_FORCE_ARROW,
                 color=col,
-                zorder=z,
+                zorder=min(z, Z_ARROW_HIGH),
             )
             ax.add_patch(arr)
             lb = (f.label or "").strip()
@@ -1268,40 +1301,29 @@ def render_force_diagram_to_png_bytes(spec: PracticeForceDiagramSpec) -> bytes |
                 disp = _mpl_label(lb, use_mathtext=f.use_mathtext)
                 if not _use_mathtext_effective(f.use_mathtext, lb):
                     disp = _short_tick_label(disp, 14)
-                try:
-                    ax.text(
-                        mx,
-                        my,
-                        disp,
-                        fontsize=FS_LEGEND,
-                        ha="center",
-                        va="center",
-                        color=TEXT_PRIMARY,
-                        bbox={
-                            "boxstyle": "round,pad=0.15",
-                            "facecolor": "white",
-                            "edgecolor": "none",
-                            "alpha": 0.88,
-                        },
-                        zorder=z + 1,
-                    )
-                except Exception:
-                    ax.text(
-                        mx,
-                        my,
-                        _short_tick_label(_mpl_plain(lb), 14),
-                        fontsize=FS_LEGEND,
-                        ha="center",
-                        va="center",
-                        color=TEXT_PRIMARY,
-                        bbox={
-                            "boxstyle": "round,pad=0.15",
-                            "facecolor": "white",
-                            "edgecolor": "none",
-                            "alpha": 0.88,
-                        },
-                        zorder=z + 1,
-                    )
+                force_label_entries.append((mx, my, disp, lb))
+
+        for mx, my, disp, lb in force_label_entries:
+            try:
+                text_with_halo(
+                    ax,
+                    mx,
+                    my,
+                    disp,
+                    fontsize=FS_LEGEND,
+                    color=TEXT_PRIMARY,
+                    bbox_pad=0.18,
+                )
+            except Exception:
+                text_with_halo(
+                    ax,
+                    mx,
+                    my,
+                    _short_tick_label(_mpl_plain(lb), 14),
+                    fontsize=FS_LEGEND,
+                    color=TEXT_PRIMARY,
+                    bbox_pad=0.18,
+                )
 
         if spec.title.strip():
             ax.set_title(_mpl_plain(spec.title.strip()), fontsize=FS_TITLE)
@@ -1342,7 +1364,17 @@ def _circuit_edge_polyline(
     return pts
 
 
-def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float, g: float) -> None:
+def _circuit_draw_symbol(
+    ax,
+    el: str,
+    mx: float,
+    my: float,
+    ux: float,
+    uy: float,
+    g: float,
+    *,
+    meter_labels: list[tuple[float, float, str]] | None = None,
+) -> None:
     px, py = -uy, ux
     el = (el or "wire").strip().lower()
     if el == "wire":
@@ -1357,7 +1389,7 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
                 facecolor="white",
                 edgecolor=TEXT_PRIMARY,
                 linewidth=LW_FLOW_NODE,
-                zorder=4,
+                zorder=Z_SYMBOL_GEOM,
             )
         )
         return
@@ -1368,14 +1400,14 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
             [my - py * o, my + py * o],
             color=TEXT_PRIMARY,
             lw=LW_CIRCUIT_WIRE,
-            zorder=4,
+            zorder=Z_SYMBOL_GEOM,
         )
         ax.plot(
             [mx + px * o, mx + px * o],
             [my - py * o, my + py * o],
             color=TEXT_PRIMARY,
             lw=LW_CIRCUIT_WIRE,
-            zorder=4,
+            zorder=Z_SYMBOL_GEOM,
         )
         return
     if el == "lamp":
@@ -1386,7 +1418,7 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
                 fill=False,
                 edgecolor=TEXT_PRIMARY,
                 linewidth=LW_FLOW_NODE,
-                zorder=4,
+                zorder=Z_SYMBOL_GEOM,
             )
         )
         return
@@ -1396,7 +1428,7 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
             [my - uy * 0.1 * g, my + uy * 0.1 * g],
             color=TEXT_PRIMARY,
             lw=LW_FLOW_NODE,
-            zorder=4,
+            zorder=Z_SYMBOL_GEOM,
         )
         return
     if el == "ammeter":
@@ -1407,19 +1439,21 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
                 fill="#ececec",
                 edgecolor=TEXT_PRIMARY,
                 linewidth=LW_FLOW_NODE,
-                zorder=4,
+                zorder=Z_SYMBOL_GEOM,
             )
         )
-        ax.text(
-            mx,
-            my,
-            "A",
-            ha="center",
-            va="center",
-            fontsize=FS_CIRCUIT_SYMBOL,
-            color=TEXT_PRIMARY,
-            zorder=5,
-        )
+        if meter_labels is not None:
+            meter_labels.append((mx, my, "A"))
+        else:
+            text_with_halo(
+                ax,
+                mx,
+                my,
+                "A",
+                fontsize=FS_CIRCUIT_SYMBOL,
+                color=TEXT_PRIMARY,
+                weight="bold",
+            )
         return
     if el == "voltmeter":
         ax.add_patch(
@@ -1429,19 +1463,21 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
                 fill="#ececec",
                 edgecolor=TEXT_PRIMARY,
                 linewidth=LW_FLOW_NODE,
-                zorder=4,
+                zorder=Z_SYMBOL_GEOM,
             )
         )
-        ax.text(
-            mx,
-            my,
-            "V",
-            ha="center",
-            va="center",
-            fontsize=FS_CIRCUIT_SYMBOL,
-            color=TEXT_PRIMARY,
-            zorder=5,
-        )
+        if meter_labels is not None:
+            meter_labels.append((mx, my, "V"))
+        else:
+            text_with_halo(
+                ax,
+                mx,
+                my,
+                "V",
+                fontsize=FS_CIRCUIT_SYMBOL,
+                color=TEXT_PRIMARY,
+                weight="bold",
+            )
         return
     ax.add_patch(
         Rectangle(
@@ -1451,7 +1487,7 @@ def _circuit_draw_symbol(ax, el: str, mx: float, my: float, ux: float, uy: float
             facecolor="#e2e2e2",
             edgecolor=EDGE_NEUTRAL,
             linewidth=LW_FLOW_NODE,
-            zorder=4,
+            zorder=Z_SYMBOL_GEOM,
         )
     )
 
@@ -1478,8 +1514,25 @@ def render_circuit_simple_to_png_bytes(spec: PracticeCircuitSpec) -> bytes | Non
         xs = [xy[0] for xy in id_to_xy.values()]
         ys = [xy[1] for xy in id_to_xy.values()]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
+
+        # 范围纳入全部导线折点，避免仅按节点包盒时边、电表被裁切
+        bx_lo, bx_hi = min(xs), max(xs)
+        by_lo, by_hi = min(ys), max(ys)
+        for e in valid_edges:
+            pts = _circuit_edge_polyline(spec, e, id_to_xy)
+            if not pts:
+                continue
+            for px, py in pts:
+                bx_lo = min(bx_lo, px)
+                bx_hi = max(bx_hi, px)
+                by_lo = min(by_lo, py)
+                by_hi = max(by_hi, py)
+        span_x = max(bx_hi - bx_lo, 1e-6)
+        span_y = max(by_hi - by_lo, 1e-6)
+        span = max(span_x, span_y, span)
         g = span * 0.35
 
+        meter_labels: list[tuple[float, float, str]] = []
         for e in valid_edges:
             pts = _circuit_edge_polyline(spec, e, id_to_xy)
             if not pts or len(pts) < 2:
@@ -1492,7 +1545,7 @@ def render_circuit_simple_to_png_bytes(spec: PracticeCircuitSpec) -> bytes | Non
                 color=TEXT_PRIMARY,
                 linewidth=LW_CIRCUIT_WIRE,
                 solid_capstyle="round",
-                zorder=2,
+                zorder=Z_WIRE,
             )
             mid_seg = len(pts) // 2
             i0 = max(0, mid_seg - 1)
@@ -1502,7 +1555,9 @@ def render_circuit_simple_to_png_bytes(spec: PracticeCircuitSpec) -> bytes | Non
             dx, dy = x1 - x0, y1 - y0
             dist = math.hypot(dx, dy) or 1.0
             ux, uy = dx / dist, dy / dist
-            _circuit_draw_symbol(ax, e.element, mx, my, ux, uy, g)
+            _circuit_draw_symbol(
+                ax, e.element, mx, my, ux, uy, g, meter_labels=meter_labels
+            )
 
         for nid, (x, y) in id_to_xy.items():
             ax.scatter(
@@ -1512,28 +1567,59 @@ def render_circuit_simple_to_png_bytes(spec: PracticeCircuitSpec) -> bytes | Non
                 c=PRINT_SERIES_PALETTE[0],
                 edgecolors=TEXT_PRIMARY,
                 linewidths=0.65,
-                zorder=3,
+                zorder=Z_SCATTER_POINT,
             )
-            ax.text(
+
+        for mx, my, ch in meter_labels:
+            text_with_halo(
+                ax,
+                mx,
+                my,
+                ch,
+                fontsize=FS_CIRCUIT_SYMBOL + 1.5,
+                color=TEXT_PRIMARY,
+                weight="bold",
+                bbox_pad=0.18,
+            )
+        for nid, (x, y) in id_to_xy.items():
+            disp_nid = _short_tick_label(
+                circuit_node_label_for_display(nid),
+                max_len=14,
+            )
+            text_with_halo(
+                ax,
                 x,
                 y - 0.04 * span,
-                _short_tick_label(nid, 10),
+                disp_nid,
                 ha="center",
                 va="top",
-                fontsize=FS_CIRCUIT_SYMBOL,
+                fontsize=FS_CIRCUIT_SYMBOL + 0.5,
                 color=TEXT_SECONDARY,
+                weight="bold",
+                bbox_pad=0.2,
             )
 
         if spec.title.strip():
             ax.set_title(spec.title.strip(), fontsize=FS_TITLE)
-        pad = 0.12 * span + 0.2
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad, max(ys) + pad)
-        ax.set_aspect("equal", adjustable="datalim")
+        # 数据坐标留白：比例 + 下限，并额外为节点下方标签留高
+        pad_xy = max(0.22 * span + 0.42, 0.55 * max(1.0, span / 3.0))
+        pad_bottom = pad_xy + max(0.12 * span, 0.28)
+        pad_top = pad_xy + max(0.08 * span, 0.22)
+        ax.set_xlim(bx_lo - pad_xy, bx_hi + pad_xy)
+        ax.set_ylim(by_lo - pad_bottom, by_hi + pad_top)
+        # box：在等比例下调整轴框而非收缩数据范围，减少「挤爆」裁切
+        ax.set_aspect("equal", adjustable="box")
         ax.axis("off")
-        fig.tight_layout()
+        fig.tight_layout(pad=1.2)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=_FIG_DPI, bbox_inches="tight", facecolor="white")
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=_FIG_DPI,
+            bbox_inches="tight",
+            pad_inches=0.38,
+            facecolor="white",
+        )
         plt.close(fig)
         data = buf.getvalue()
         return data if len(data) > 100 else None
@@ -2103,11 +2189,27 @@ def render_energy_profile_to_png_bytes(spec: PracticeEnergyProfileSpec) -> bytes
             )
             bl = (spec.barrier_label or "").strip()
             if bl:
-                ax.text(xm + (max(spec.x) - min(spec.x)) * 0.03, (y_lo + y_hi) / 2, _mpl_plain(bl), fontsize=FS_SMALL)
-        ax.set_xlabel(_mpl_plain(spec.x_label or "进程"), fontsize=FS_AXIS, color=TEXT_PRIMARY)
-        ax.set_ylabel(_mpl_plain(spec.y_label or "能量"), fontsize=FS_AXIS, color=TEXT_PRIMARY)
+                ax.text(
+                    xm + (max(spec.x) - min(spec.x)) * 0.03,
+                    (y_lo + y_hi) / 2,
+                    _mpl_plain(figure_matplotlib_plain_text(bl)),
+                    fontsize=FS_SMALL,
+                )
+        ax.set_xlabel(
+            _mpl_plain(figure_matplotlib_plain_text(spec.x_label or "进程")),
+            fontsize=FS_AXIS,
+            color=TEXT_PRIMARY,
+        )
+        ax.set_ylabel(
+            _mpl_plain(figure_matplotlib_plain_text(spec.y_label or "能量")),
+            fontsize=FS_AXIS,
+            color=TEXT_PRIMARY,
+        )
         if spec.title.strip():
-            ax.set_title(_mpl_plain(spec.title.strip()), fontsize=FS_TITLE)
+            ax.set_title(
+                _mpl_plain(figure_matplotlib_plain_text(spec.title.strip())),
+                fontsize=FS_TITLE,
+            )
         ax.grid(True, alpha=_GRID_ALPHA, linestyle="--", linewidth=0.6)
         fig.tight_layout()
         buf = io.BytesIO()
@@ -2151,11 +2253,33 @@ def render_electrochemical_cell_to_png_bytes(spec: PracticeElectrochemicalCellSp
         ax.add_patch(
             Rectangle((6.75, 1.2), 0.55, 4.0, facecolor="#c0c0c0", edgecolor=EDGE_NEUTRAL, linewidth=1.0, zorder=2)
         )
-        ax.text(2.98, 3.3, _mpl_plain((spec.left_label or "-").strip() or "-"), ha="center", va="center", fontsize=FS_AXIS)
-        ax.text(7.03, 3.3, _mpl_plain((spec.right_label or "+").strip() or "+"), ha="center", va="center", fontsize=FS_AXIS)
+        ax.text(
+            2.98,
+            3.3,
+            _mpl_plain(figure_matplotlib_plain_text((spec.left_label or "-").strip() or "-")),
+            ha="center",
+            va="center",
+            fontsize=FS_AXIS,
+        )
+        ax.text(
+            7.03,
+            3.3,
+            _mpl_plain(figure_matplotlib_plain_text((spec.right_label or "+").strip() or "+")),
+            ha="center",
+            va="center",
+            fontsize=FS_AXIS,
+        )
         elab = (spec.electrolyte_label or "").strip()
         if elab:
-            ax.text(5.0, 3.1, _mpl_plain(elab), ha="center", va="center", fontsize=FS_SMALL, color=TEXT_SECONDARY)
+            ax.text(
+                5.0,
+                3.1,
+                _mpl_plain(figure_matplotlib_plain_text(elab)),
+                ha="center",
+                va="center",
+                fontsize=FS_SMALL,
+                color=TEXT_SECONDARY,
+            )
         ax.plot([3.0, 7.0], [5.6, 5.6], color=EDGE_NEUTRAL, linewidth=LW_CIRCUIT_WIRE, zorder=3)
         e_dir = 1.0 if spec.electron_cw else -1.0
         for x in np.linspace(3.2, 6.8, 5):
@@ -2206,7 +2330,10 @@ def render_electrochemical_cell_to_png_bytes(spec: PracticeElectrochemicalCellSp
         mode_txt = "原电池" if spec.mode == "galvanic" else "电解池"
         ax.text(5.0, 0.45, _mpl_plain(mode_txt), ha="center", va="bottom", fontsize=FS_SMALL, color=TEXT_SECONDARY)
         if spec.title.strip():
-            ax.set_title(_mpl_plain(spec.title.strip()), fontsize=FS_TITLE)
+            ax.set_title(
+                _mpl_plain(figure_matplotlib_plain_text(spec.title.strip())),
+                fontsize=FS_TITLE,
+            )
         fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=_FIG_DPI, bbox_inches="tight", facecolor="white")
