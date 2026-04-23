@@ -9,7 +9,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.models import Artifact, Conversation, ExamPaper, Message, QuestionAsset
+from app.db.models import Artifact, Conversation, ExamPaper, Message, PaperSet, PaperSetItem, QuestionAsset
+from app.db.models import QuestionKnowledgeLink
 
 
 async def delete_conversation_cascade(session: AsyncSession, conversation_id: str) -> None:
@@ -17,8 +18,19 @@ async def delete_conversation_cascade(session: AsyncSession, conversation_id: st
     r = await session.execute(select(ExamPaper.id).where(ExamPaper.conversation_id == conversation_id))
     paper_ids = [row[0] for row in r.all()]
     if paper_ids:
+        qa_r = await session.execute(select(QuestionAsset.id).where(QuestionAsset.paper_id.in_(paper_ids)))
+        qa_ids = [row[0] for row in qa_r.all()]
+        if qa_ids:
+            await session.execute(
+                delete(QuestionKnowledgeLink).where(QuestionKnowledgeLink.question_asset_id.in_(qa_ids))
+            )
         await session.execute(delete(QuestionAsset).where(QuestionAsset.paper_id.in_(paper_ids)))
         await session.execute(delete(Artifact).where(Artifact.paper_id.in_(paper_ids)))
+    ps_r = await session.execute(select(PaperSet.id).where(PaperSet.conversation_id == conversation_id))
+    ps_ids = [row[0] for row in ps_r.all()]
+    if ps_ids:
+        await session.execute(delete(PaperSetItem).where(PaperSetItem.paper_set_id.in_(ps_ids)))
+        await session.execute(delete(PaperSet).where(PaperSet.id.in_(ps_ids)))
     await session.execute(delete(ExamPaper).where(ExamPaper.conversation_id == conversation_id))
     await session.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))

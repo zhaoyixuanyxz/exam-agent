@@ -83,6 +83,50 @@ class Artifact(Base):
     paper: Mapped["ExamPaper"] = relationship(back_populates="artifacts")
 
 
+class AppUser(Base):
+    """V2.3：组织与权限基础（单用户部署时插入默认用户）。"""
+
+    __tablename__ = "app_users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    display_name: Mapped[str] = mapped_column(String(256), default="")
+    role: Mapped[str] = mapped_column(String(32), default="teacher")
+    data_scope_default: Mapped[str] = mapped_column(String(32), default="own")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgePointCanonical(Base):
+    """标准考点主数据。"""
+
+    __tablename__ = "knowledge_point_canonicals"
+    __table_args__ = (UniqueConstraint("standard_key", name="uq_kp_canonical_standard_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    standard_key: Mapped[str] = mapped_column(String(256), index=True)
+    name: Mapped[str] = mapped_column(String(512), default="")
+    aliases_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    chapter_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    grade_min: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    grade_max: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KnowledgeKeyMapping(Base):
+    """原始 LLM key -> 标准考点。"""
+
+    __tablename__ = "knowledge_key_mappings"
+    __table_args__ = (UniqueConstraint("raw_key", name="uq_knowledge_raw_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    raw_key: Mapped[str] = mapped_column(String(256), index=True)
+    knowledge_point_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_point_canonicals.id"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class QuestionAsset(Base):
     """V2.2：结构化确认后的题目行级资产（可追溯，多版本按 structured_version 区分）。"""
 
@@ -97,6 +141,7 @@ class QuestionAsset(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, default=_uuid)
     conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
     paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("exam_papers.id"), index=True)
     structured_version: Mapped[int] = mapped_column(default=0)
@@ -107,5 +152,88 @@ class QuestionAsset(Base):
     options_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     knowledge_point_keys_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     alignment_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    textbook_version: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    chapter_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    grade_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    subject_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_paper_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    quality_status: Mapped[str] = mapped_column(String(32), default="pending")
+    review_status: Mapped[str] = mapped_column(String(32), default="pending_review")
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("app_users.id"), nullable=True, index=True
+    )
+    visibility: Mapped[str] = mapped_column(String(32), default="own")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class QuestionKnowledgeLink(Base):
+    """题目与标准考点关联。"""
+
+    __tablename__ = "question_knowledge_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "question_asset_id",
+            "knowledge_point_id",
+            name="uq_qkl_qa_kp",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    question_asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("question_assets.id"), index=True)
+    knowledge_point_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_point_canonicals.id"), index=True
+    )
+    raw_key: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperSet(Base):
+    """题单 / 组卷篮。"""
+
+    __tablename__ = "paper_sets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("app_users.id"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(256), default="题单")
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    items: Mapped[list["PaperSetItem"]] = relationship(
+        back_populates="paper_set", cascade="all, delete-orphan"
+    )
+
+
+class PaperSetItem(Base):
+    __tablename__ = "paper_set_items"
+    __table_args__ = (
+        UniqueConstraint("paper_set_id", "question_asset_id", name="uq_paper_set_qa"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    paper_set_id: Mapped[str] = mapped_column(String(36), ForeignKey("paper_sets.id"), index=True)
+    question_asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("question_assets.id"), index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    paper_set: Mapped["PaperSet"] = relationship(back_populates="items")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("app_users.id"), index=True)
+    action: Mapped[str] = mapped_column(String(64))
+    resource_type: Mapped[str] = mapped_column(String(64))
+    resource_id: Mapped[str] = mapped_column(String(64), default="")
+    detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -19,6 +19,12 @@ class QuestionItem(BaseModel):
     stem: str
     options: list[str] = Field(default_factory=list)
     blocks: list[ContentBlock] = Field(default_factory=list)
+    # V2.3 题库主数据：可选，用于答案/解析落库
+    answer: str | None = None
+    explanation: str | None = None
+    difficulty: str | None = None
+    textbook_version: str | None = None
+    chapter_path: str | None = None
 
 
 class PaperSection(BaseModel):
@@ -1118,6 +1124,7 @@ class QuestionAssetDTO(BaseModel):
     """题目资产 API / 分析用 DTO。"""
 
     id: str
+    business_id: str = Field(description="题库业务稳定标识，默认等于 id")
     paper_id: str
     conversation_id: str
     structured_version: int
@@ -1127,7 +1134,24 @@ class QuestionAssetDTO(BaseModel):
     stem: str = ""
     options: list[str] = Field(default_factory=list)
     knowledge_point_keys: list[str] = Field(default_factory=list)
+    knowledge_point_ids: list[str] = Field(
+        default_factory=list,
+        description="标准考点主数据 id 列表（V2.3）",
+    )
     alignment_snapshot: dict[str, Any] | None = None
+    content_fingerprint: str = ""
+    answer: str | None = None
+    explanation: str | None = None
+    difficulty: str | None = None
+    textbook_version: str | None = None
+    chapter_path: str | None = None
+    grade_label: str | None = None
+    subject_label: str | None = None
+    source_paper_name: str | None = None
+    quality_status: str = "pending"
+    review_status: str = "pending_review"
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class MultiPaperAnalysisRequest(BaseModel):
@@ -1136,6 +1160,23 @@ class MultiPaperAnalysisRequest(BaseModel):
     grade_contains: str | None = Field(
         default=None,
         description="可选：年级字符串子串匹配（如 初二），对 grade_min/grade_max 做包含判断",
+    )
+    # V2.3 教研分析：高级筛选
+    created_after: str | None = Field(
+        default=None,
+        description="可选：仅纳入 exam_papers.created_at >= 该 ISO 日期时间的材料",
+    )
+    created_before: str | None = Field(
+        default=None,
+        description="可选：仅纳入 exam_papers.created_at <= 该 ISO 日期时间的材料",
+    )
+    paper_id_subset: list[str] | None = Field(
+        default=None,
+        description="可选：仅分析该 id 列表与 paper_ids 的交集（用于来源范围）",
+    )
+    use_canonical_knowledge_points: bool = Field(
+        default=True,
+        description="为 True 时重复考点/覆盖等优先使用标准考点主数据口径",
     )
 
 
@@ -1202,3 +1243,105 @@ class MultiPaperAnalysisResponse(BaseModel):
     repeated_knowledge_points: list[RepeatedKnowledgePoint] = Field(default_factory=list)
     chapter_distribution: list[ChapterDistributionSlice] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list, description="如无考点分析 JSON 等时的提示")
+
+
+# --- V2.3 题库 / 题单 / 治理 / 组织 ---
+
+
+class QuestionBankListResponse(BaseModel):
+    items: list[QuestionAssetDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+
+
+class KnowledgePointCanonicalDTO(BaseModel):
+    id: str
+    standard_key: str
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    chapter_path: str | None = None
+    subject: str | None = None
+    grade_min: str | None = None
+    grade_max: str | None = None
+
+
+class KnowledgePointListResponse(BaseModel):
+    items: list[KnowledgePointCanonicalDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class PaperSetDTO(BaseModel):
+    id: str
+    conversation_id: str
+    name: str
+    config_json: dict[str, Any] = Field(default_factory=dict)
+    item_count: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class PaperSetItemDTO(BaseModel):
+    id: str
+    question_asset_id: str
+    sort_order: int = 0
+
+
+class PaperSetDetailDTO(BaseModel):
+    paper_set: PaperSetDTO
+    items: list[QuestionAssetDTO] = Field(default_factory=list)
+
+
+class PaperSetCreateRequest(BaseModel):
+    name: str = Field(default="题单")
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class PaperSetAddItemsRequest(BaseModel):
+    question_asset_ids: list[str] = Field(..., min_length=1)
+
+
+class CompilePaperRequest(BaseModel):
+    """组卷起步：题量/题型/考点/难度等参数，结果写入 exports 可后续扩展。"""
+
+    target_count: int = Field(default=10, ge=1, le=200)
+    qtype_ratio: dict[str, float] = Field(
+        default_factory=dict,
+        description="题型名 -> 权重 0~1，未指定部分均分",
+    )
+    knowledge_point_ids: list[str] = Field(default_factory=list, description="限定考点 id，空=不限")
+    difficulty_min: str | None = None
+    difficulty_max: str | None = None
+
+
+class CompilePaperResponse(BaseModel):
+    selected_question_ids: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class QuestionAssetPatchRequest(BaseModel):
+    qtype: str | None = None
+    knowledge_point_ids: list[str] | None = None
+    difficulty: str | None = None
+    chapter_path: str | None = None
+    quality_status: str | None = None
+    review_status: str | None = None
+    answer: str | None = None
+    explanation: str | None = None
+
+
+class AppUserDTO(BaseModel):
+    id: str
+    display_name: str = ""
+    role: str = "teacher"
+    data_scope: str = "own"
+
+
+class AuditLogEntryDTO(BaseModel):
+    id: str
+    user_id: str
+    action: str
+    resource_type: str
+    resource_id: str = ""
+    detail_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None

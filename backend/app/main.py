@@ -7,7 +7,11 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.graph import setup_checkpoint, shutdown_checkpoint
 from app.api.chat import router as chat_router
 from app.api.exam_papers import router as exam_papers_router
+from app.api.knowledge_v23 import router as knowledge_v23_router
 from app.api.multi_paper import router as multi_paper_router
+from app.api.paper_sets_v23 import router as paper_sets_v23_router
+from app.api.question_bank_v23 import router as question_bank_v23_router
+from app.api.users_v23 import router as users_v23_router
 from app.config import settings
 from app.db.init_db import init_db
 
@@ -40,6 +44,10 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(exam_papers_router)
 app.include_router(multi_paper_router)
+app.include_router(question_bank_v23_router)
+app.include_router(knowledge_v23_router)
+app.include_router(paper_sets_v23_router)
+app.include_router(users_v23_router)
 app.mount(
     "/export-files",
     StaticFiles(directory=settings.export_dir.as_posix()),

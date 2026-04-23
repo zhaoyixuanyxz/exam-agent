@@ -54,6 +54,7 @@ export function MultiPaperAnalysisPrototype(props: { conversationId: string }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
+  const [useCanonical, setUseCanonical] = useState(true);
 
   const loadPapers = useCallback(async () => {
     setLoadingList(true);
@@ -96,7 +97,7 @@ export function MultiPaperAnalysisPrototype(props: { conversationId: string }) {
       const r = await fetch(`${API}/api/conversations/${conversationId}/multi-paper-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper_ids: ids }),
+        body: JSON.stringify({ paper_ids: ids, use_canonical_knowledge_points: useCanonical }),
       });
       if (!r.ok) {
         const t = await r.text();
@@ -113,9 +114,9 @@ export function MultiPaperAnalysisPrototype(props: { conversationId: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
       <div className="rounded-2xl border border-white/60 bg-white/80 p-4 shadow-sm backdrop-blur">
-        <h2 className="text-base font-semibold text-slate-800">多卷分析（V2.2 预研原型）</h2>
+        <h2 className="text-base font-semibold text-slate-800">多卷 / 教研分析</h2>
         <p className="mt-1 text-sm text-slate-600">
-          基于已确认结构化的题目行与考点映射做确定性聚合，不调用跨卷大模型。请先在各材料上完成结构化确认；若历史数据无题目资产，可先在主工作台确认一次或调用重建接口。
+          基于题目资产与考点映射做确定性聚合。支持标准考点主数据口径（V2.3），见下方「使用标准考点」选项。
         </p>
       </div>
 
@@ -159,6 +160,14 @@ export function MultiPaperAnalysisPrototype(props: { conversationId: string }) {
             ))}
           </ul>
         )}
+        <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={useCanonical}
+            onChange={(e) => setUseCanonical(e.target.checked)}
+          />
+          使用标准考点主数据口径（V2.3 归并后统计）
+        </label>
         <button
           type="button"
           disabled={running || selected.size < 2}

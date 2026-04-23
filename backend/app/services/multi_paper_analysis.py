@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Any
 
-from app.db.models import ExamPaper
+from sqlalchemy import select
+
+from app.db.models import ExamPaper, KnowledgeKeyMapping, KnowledgePointCanonical
 from app.db.sync_session import sync_session
 from app.models.schemas import (
     ChapterDistributionSlice,
@@ -40,6 +43,31 @@ def _alignment_matches_filter(paper: ExamPaper, req: MultiPaperAnalysisRequest) 
     return True
 
 
+def _parse_iso_dt(s: str | None) -> datetime | None:
+    if not s or not str(s).strip():
+        return None
+    raw = str(s).strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _date_in_range(paper: ExamPaper, req: MultiPaperAnalysisRequest) -> bool:
+    ca = _parse_iso_dt(req.created_after)
+    cb = _parse_iso_dt(req.created_before)
+    if not ca and not cb:
+        return True
+    t = paper.created_at
+    if t is None:
+        return True
+    if ca and t < ca:
+        return False
+    if cb and t > cb:
+        return False
+    return True
+
+
 def _knowledge_point_name_map(paper: ExamPaper) -> dict[str, str]:
     raw = paper.knowledge_analysis_json
     if not raw or not isinstance(raw, dict):
@@ -62,6 +90,46 @@ def _chapter_hint_by_key(paper: ExamPaper) -> dict[str, str]:
     return {kp.key: (kp.book_chapter_hint or "").strip() for kp in ka.knowledge_points}
 
 
+def _resolved_keys(
+    session: Any,
+    row: Any,
+    paper: ExamPaper,
+    use_canonical: bool,
+) -> list[str]:
+    raw_list = [str(k).strip() for k in (row.knowledge_point_keys_json or []) if k and str(k).strip()]
+    if not use_canonical:
+        return raw_list
+    out: list[str] = []
+    for r in raw_list:
+        m = session.execute(
+            select(KnowledgeKeyMapping).where(KnowledgeKeyMapping.raw_key == r)
+        ).scalar_one_or_none()
+        if m:
+            kpc = session.get(KnowledgePointCanonical, str(m.knowledge_point_id))
+            out.append(str(kpc.standard_key) if kpc else r)
+        else:
+            out.append(r)
+    return out
+
+
+def _kp_display_name(
+    session: Any,
+    key: str,
+    use_canonical: bool,
+    fallback: str,
+) -> str:
+    if not use_canonical:
+        return fallback
+    m = session.execute(
+        select(KnowledgeKeyMapping).where(KnowledgeKeyMapping.raw_key == key)
+    ).scalar_one_or_none()
+    if m:
+        kpc = session.get(KnowledgePointCanonical, str(m.knowledge_point_id))
+        if kpc and (kpc.name or "").strip():
+            return str(kpc.name).strip()
+    return fallback
+
+
 def run_multi_paper_analysis(
     conversation_id: str,
     req: MultiPaperAnalysisRequest,
@@ -69,9 +137,16 @@ def run_multi_paper_analysis(
     notes: list[str] = []
     with sync_session() as session:
         papers: list[ExamPaper] = []
+        subset = set(req.paper_id_subset) if req.paper_id_subset else None
         for pid in req.paper_ids:
             p = session.get(ExamPaper, pid)
             if not p or p.conversation_id != conversation_id:
+                continue
+            if subset is not None and p.id not in subset:
+                notes.append(f"材料 {pid[:8]}… 已按来源子集排除")
+                continue
+            if not _date_in_range(p, req):
+                notes.append(f"材料 {pid[:8]}… 已按时间范围排除")
                 continue
             if not _alignment_matches_filter(p, req):
                 notes.append(f"材料 {pid[:8]}… 已按对齐信息过滤排除")
@@ -95,6 +170,7 @@ def run_multi_paper_analysis(
         all_key_sets: list[set[str]] = []
         kp_names_global: dict[str, str] = {}
         chapter_by_paper: dict[str, dict[str, str]] = {}
+        use_c = bool(req.use_canonical_knowledge_points)
 
         for p in papers:
             rows = load_question_assets_or_build(session, p)
@@ -125,12 +201,45 @@ def run_multi_paper_analysis(
             )
             ks: set[str] = set()
             for row in rows:
-                for k in row.knowledge_point_keys_json or []:
-                    if k:
-                        ks.add(str(k))
+                for rk in _resolved_keys(session, row, p, use_c):
+                    if rk:
+                        ks.add(rk)
             all_key_sets.append(ks)
-            kp_names_global.update(_knowledge_point_name_map(p))
-            chapter_by_paper[p.id] = _chapter_hint_by_key(p)
+            name_map = _knowledge_point_name_map(p)
+            for row in rows:
+                for raw in row.knowledge_point_keys_json or []:
+                    raw = str(raw).strip()
+                    if not raw:
+                        continue
+                    for std in _resolved_keys(
+                        session,
+                        type("R", (), {"knowledge_point_keys_json": [raw]})(),
+                        p,
+                        use_c,
+                    ):
+                        if not std:
+                            continue
+                        disp = _kp_display_name(session, raw, use_c, name_map.get(raw, ""))
+                        if std not in kp_names_global or not (kp_names_global.get(std) or "").strip():
+                            kp_names_global[std] = disp
+            ch_raw = _chapter_hint_by_key(p)
+            if use_c:
+                chm: dict[str, str] = {}
+                for raw_key, h in ch_raw.items():
+                    if not h:
+                        continue
+                    m = session.execute(
+                        select(KnowledgeKeyMapping).where(KnowledgeKeyMapping.raw_key == raw_key)
+                    ).scalar_one_or_none()
+                    if m:
+                        kpc = session.get(KnowledgePointCanonical, str(m.knowledge_point_id))
+                        sk = str(kpc.standard_key) if kpc else raw_key
+                    else:
+                        sk = raw_key
+                    chm[sk] = h
+                chapter_by_paper[p.id] = chm
+            else:
+                chapter_by_paper[p.id] = ch_raw
 
         union_keys: set[str] = set()
         for s in all_key_sets:
@@ -177,8 +286,7 @@ def run_multi_paper_analysis(
         key_q_hits: Counter[str] = Counter()
         for p in papers:
             for row in assets_by_paper.get(p.id, []):
-                for k in row.knowledge_point_keys_json or []:
-                    kk = str(k)
+                for kk in _resolved_keys(session, row, p, use_c):
                     if not kk:
                         continue
                     key_paper_count[kk].add(p.id)
@@ -200,11 +308,23 @@ def run_multi_paper_analysis(
         chap_dist: list[ChapterDistributionSlice] = []
         for p in papers:
             ch_ctr: Counter[str] = Counter()
+            chmap = chapter_by_paper.get(p.id, {}) or {}
             for row in assets_by_paper.get(p.id, []):
-                for k in row.knowledge_point_keys_json or []:
-                    hint = (chapter_by_paper.get(p.id, {}) or {}).get(str(k), "")
-                    if hint:
-                        ch_ctr[hint] += 1
+                for raw in row.knowledge_point_keys_json or []:
+                    rks = str(raw).strip()
+                    if not rks:
+                        continue
+                    for rk in _resolved_keys(
+                        session,
+                        type("R", (), {"knowledge_point_keys_json": [rks]})(),
+                        p,
+                        use_c,
+                    ):
+                        hint = chmap.get(rk, "")
+                        if not hint and not use_c:
+                            hint = chmap.get(rks, "")
+                        if hint:
+                            ch_ctr[hint] += 1
             chap_dist.append(
                 ChapterDistributionSlice(
                     paper_id=p.id,

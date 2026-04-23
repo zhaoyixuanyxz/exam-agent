@@ -59,3 +59,63 @@ def apply_sqlite_artifact_v21_columns(connection: Connection) -> None:
         statements.append("ALTER TABLE artifacts ADD COLUMN config_snapshot_json TEXT")
     for stmt in statements:
         connection.execute(text(stmt))
+
+
+def apply_sqlite_question_assets_v23_columns(connection: Connection) -> None:
+    """V2.3：为 question_assets 增加题库主数据与治理字段，并回填 business_id。"""
+    insp = inspect(connection)
+    if not insp.has_table("question_assets"):
+        return
+    cols = {c["name"] for c in insp.get_columns("question_assets")}
+    alters: list[str] = []
+    if "business_id" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN business_id VARCHAR(36)")
+    if "content_fingerprint" not in cols:
+        alters.append(
+            "ALTER TABLE question_assets ADD COLUMN content_fingerprint VARCHAR(64) DEFAULT ''"
+        )
+    if "answer" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN answer TEXT")
+    if "explanation" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN explanation TEXT")
+    if "difficulty" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN difficulty VARCHAR(32)")
+    if "textbook_version" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN textbook_version VARCHAR(256)")
+    if "chapter_path" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN chapter_path VARCHAR(512)")
+    if "grade_label" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN grade_label VARCHAR(128)")
+    if "subject_label" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN subject_label VARCHAR(128)")
+    if "source_paper_name" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN source_paper_name VARCHAR(512)")
+    if "quality_status" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN quality_status VARCHAR(32) DEFAULT 'pending'")
+    if "review_status" not in cols:
+        alters.append(
+            "ALTER TABLE question_assets ADD COLUMN review_status VARCHAR(32) DEFAULT 'pending_review'"
+        )
+    if "owner_user_id" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN owner_user_id VARCHAR(36)")
+    if "visibility" not in cols:
+        alters.append("ALTER TABLE question_assets ADD COLUMN visibility VARCHAR(32) DEFAULT 'own'")
+    for stmt in alters:
+        connection.execute(text(stmt))
+    # 重新读取列（可能已扩展）
+    cols_after = {c["name"] for c in inspect(connection).get_columns("question_assets")}
+    if "business_id" in cols_after:
+        connection.execute(
+            text(
+                "UPDATE question_assets SET business_id = id WHERE business_id IS NULL OR TRIM(business_id) = ''"
+            )
+        )
+    try:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_question_assets_business_id "
+                "ON question_assets(business_id)"
+            )
+        )
+    except Exception:
+        pass
