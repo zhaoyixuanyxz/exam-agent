@@ -12,6 +12,20 @@ if (-not (Test-Path $Py)) {
     python -m venv .venv
     & .\.venv\Scripts\pip.exe install -e ".[dev]"
     Pop-Location
+} else {
+    # Venv exists but pip install may have failed. Do not use "pip show": it prints WARNING to stderr
+    # when missing, which becomes a terminating error under $ErrorActionPreference = Stop.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & $Py -c "import uvicorn" 2>$null | Out-Null
+    $needRepair = ($LASTEXITCODE -ne 0)
+    $ErrorActionPreference = $prevEap
+    if ($needRepair) {
+        Write-Host "Backend venv is incomplete. Running pip install..." -ForegroundColor Yellow
+        Push-Location $Backend
+        & $Py -m pip install -e ".[dev]"
+        Pop-Location
+    }
 }
 
 if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
@@ -37,13 +51,35 @@ Start-Process powershell `
     -WorkingDirectory $Backend `
     -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 
-Start-Sleep -Seconds 3
+$apiUrl = "http://127.0.0.1:8000/openapi.json"
+$deadline = (Get-Date).AddSeconds(120)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        $r = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        if ($r.StatusCode -eq 200) {
+            $ready = $true
+            break
+        }
+    } catch {
+        Start-Sleep -Seconds 1
+    }
+}
+
+if (-not $ready) {
+    Write-Host ""
+    Write-Host "ERROR: Backend did not become ready at http://127.0.0.1:8000 within 120s." -ForegroundColor Red
+    Write-Host "Check the BACKEND PowerShell window for Python/traceback errors (pip install failed, port in use, etc.)." -ForegroundColor Yellow
+    Write-Host "Do not start the UI until API docs load: http://127.0.0.1:8000/docs" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
 
 Start-Process powershell `
     -WorkingDirectory $Frontend `
     -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "npm run dev -- --host 127.0.0.1 --port 5173"
 
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 3
 Start-Process "http://127.0.0.1:5173"
 
 Write-Host "Opened browser: http://127.0.0.1:5173" -ForegroundColor Green

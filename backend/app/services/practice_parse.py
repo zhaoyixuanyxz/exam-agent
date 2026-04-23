@@ -470,7 +470,21 @@ def _normalize_flowchart_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
 
 
 _CIRCUIT_ELEMENTS = frozenset(
-    {"wire", "resistor", "cell", "lamp", "switch", "ammeter", "voltmeter", "generic"}
+    {
+        "wire",
+        "resistor",
+        "cell",
+        "battery",
+        "capacitor",
+        "lamp",
+        "switch",
+        "rheostat",
+        "fuse",
+        "diode",
+        "ammeter",
+        "voltmeter",
+        "generic",
+    }
 )
 
 
@@ -526,6 +540,12 @@ def _normalize_force_diagram_spec(spec: dict[str, Any]) -> dict[str, Any] | None
         oy = float(spec.get("object_y", 0))
     except (TypeError, ValueError):
         ox, oy = 0.0, 0.0
+    os_raw = str(spec.get("object_style") or "dot").strip().lower()
+    object_style = "block" if os_raw == "block" else "dot"
+    sah = spec.get("show_axes_hint", False)
+    show_axes_hint = bool(sah) if isinstance(sah, bool) else str(sah).strip().lower() in ("1", "true", "yes")
+    nrm = spec.get("normalize_force_lengths", False)
+    normalize_force_lengths = bool(nrm) if isinstance(nrm, bool) else str(nrm).strip().lower() in ("1", "true", "yes")
     return {
         "title": str(spec.get("title") or ""),
         "caption": str(spec.get("caption") or ""),
@@ -533,6 +553,9 @@ def _normalize_force_diagram_spec(spec: dict[str, Any]) -> dict[str, Any] | None
         "object_dot": object_dot,
         "object_x": ox,
         "object_y": oy,
+        "object_style": object_style,
+        "show_axes_hint": show_axes_hint,
+        "normalize_force_lengths": normalize_force_lengths,
     }
 
 
@@ -570,8 +593,34 @@ def _normalize_circuit_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
         if not src or not tgt or src not in id_set or tgt not in id_set:
             continue
         el = str(e.get("element") or "wire").strip().lower()
+        if el in ("cap", "电容", "电容器"):
+            el = "capacitor"
+        elif el in ("battery", "电池", "电池组", "蓄电池"):
+            el = "battery"
+        elif el in ("rheostat", "变阻器", "滑动变阻器"):
+            el = "rheostat"
+        elif el in ("fuse", "保险丝", "熔断器"):
+            el = "fuse"
+        elif el in ("diode", "二极管"):
+            el = "diode"
         if el not in _CIRCUIT_ELEMENTS:
             el = "wire"
+        switch_state_raw = str(e.get("switch_state") or e.get("state") or "").strip().lower()
+        if switch_state_raw in ("闭合", "接通", "closed", "on", "1", "true"):
+            switch_state = "closed"
+        elif switch_state_raw in ("断开", "开路", "open", "off", "0", "false"):
+            switch_state = "open"
+        else:
+            switch_state = "default"
+        slider_position: float | None = None
+        slider_raw = e.get("slider_position", e.get("slider_t", e.get("wiper_t")))
+        if slider_raw is not None:
+            try:
+                slider_val = float(slider_raw)
+            except (TypeError, ValueError):
+                slider_val = float("nan")
+            if math.isfinite(slider_val):
+                slider_position = min(1.0, max(0.0, slider_val))
         via_list: list[dict[str, float]] = []
         vraw = e.get("via")
         if isinstance(vraw, list):
@@ -585,7 +634,16 @@ def _normalize_circuit_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
                     continue
                 if math.isfinite(vx) and math.isfinite(vy):
                     via_list.append({"x": vx, "y": vy})
-        edges.append({"source": src, "target": tgt, "element": el, "via": via_list})
+        edges.append(
+            {
+                "source": src,
+                "target": tgt,
+                "element": el,
+                "via": via_list,
+                "switch_state": switch_state,
+                "slider_position": slider_position,
+            }
+        )
     if len(nodes) < 2 or not edges:
         return None
     return {
@@ -805,7 +863,12 @@ def _normalize_histogram_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
 
 def _normalize_solid_wireframe_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
     proj = str(spec.get("projection") or "isometric").strip().lower()
-    projection = "cabinet" if proj == "cabinet" else "isometric"
+    if proj == "cabinet":
+        projection = "cabinet"
+    elif proj in ("oblique", "斜二测", "cavalier", "pep_oblique"):
+        projection = "oblique"
+    else:
+        projection = "isometric"
     verts_raw = spec.get("vertices")
     if not isinstance(verts_raw, list) or len(verts_raw) < 2:
         return None
@@ -1159,6 +1222,7 @@ def _normalize_pedigree_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
                 x_hint = None
         af = p.get("affected", False)
         cr = p.get("carrier", False)
+        dec = p.get("deceased", False)
         individuals.append(
             {
                 "id": pid,
@@ -1166,6 +1230,7 @@ def _normalize_pedigree_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
                 "sex": sex,
                 "affected": bool(af) if isinstance(af, bool) else str(af).lower() in ("1", "true", "yes"),
                 "carrier": bool(cr) if isinstance(cr, bool) else str(cr).lower() in ("1", "true", "yes"),
+                "deceased": bool(dec) if isinstance(dec, bool) else str(dec).lower() in ("1", "true", "yes"),
                 "x_hint": x_hint,
             }
         )
@@ -1192,12 +1257,17 @@ def _normalize_pedigree_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
                 "child": str(d.get("child") or "").strip(),
             }
         )
+    pb = str(spec.get("proband_id") or "").strip()
+    sl = spec.get("show_legend", False)
+    show_legend = bool(sl) if isinstance(sl, bool) else str(sl).strip().lower() in ("1", "true", "yes")
     return {
         "title": str(spec.get("title") or ""),
         "caption": str(spec.get("caption") or ""),
         "individuals": individuals,
         "marriages": marriages,
         "descents": descents,
+        "proband_id": pb,
+        "show_legend": show_legend,
     }
 
 
@@ -1257,6 +1327,12 @@ def _normalize_electrochemical_cell_spec(spec: dict[str, Any]) -> dict[str, Any]
     at = str(spec.get("anion_to") or "left").strip().lower()
     if at not in ("left", "right", "none"):
         at = "left"
+    sb = spec.get("salt_bridge_u", False)
+    if isinstance(sb, bool):
+        salt_bridge_u = sb
+    else:
+        sbs = str(sb).strip().lower()
+        salt_bridge_u = sbs in ("1", "true", "yes", "u", "盐桥")
     return {
         "title": str(spec.get("title") or ""),
         "caption": str(spec.get("caption") or ""),
@@ -1267,6 +1343,7 @@ def _normalize_electrochemical_cell_spec(spec: dict[str, Any]) -> dict[str, Any]
         "electron_cw": electron_cw,
         "cation_to": ct,
         "anion_to": at,
+        "salt_bridge_u": salt_bridge_u,
     }
 
 

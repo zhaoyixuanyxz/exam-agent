@@ -30,6 +30,15 @@ def test_artifacts_empty_conversation():
         assert r2.json().get("items") == []
 
 
+def test_agent_run_active_false_when_idle():
+    with TestClient(app) as client:
+        r = client.post("/api/conversations")
+        cid = r.json()["conversation_id"]
+        st = client.get(f"/api/conversations/{cid}/agent-run-active")
+        assert st.status_code == 200
+        assert st.json() == {"active": False}
+
+
 def test_list_conversations():
     with TestClient(app) as client:
         r = client.get("/api/conversations")
@@ -37,6 +46,25 @@ def test_list_conversations():
         data = r.json()
         assert "conversations" in data
         assert isinstance(data["conversations"], list)
+
+
+def test_patch_conversation_title():
+    with TestClient(app) as client:
+        r = client.post("/api/conversations")
+        cid = r.json()["conversation_id"]
+        p = client.patch(
+            f"/api/conversations/{cid}",
+            json={"title": "  期中复习  "},
+        )
+        assert p.status_code == 200
+        assert p.json().get("title") == "期中复习"
+        listed = client.get("/api/conversations").json()["conversations"]
+        row = next((c for c in listed if c["id"] == cid), None)
+        assert row is not None
+        assert row.get("title") == "期中复习"
+        clear = client.patch(f"/api/conversations/{cid}", json={"title": ""})
+        assert clear.status_code == 200
+        assert clear.json().get("title") is None
 
 
 def test_messages_and_delete_conversation():

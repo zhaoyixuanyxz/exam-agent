@@ -44,6 +44,8 @@ class Settings(BaseSettings):
 
     # 分块练习出题期望的 max_tokens；实际请求见 effective_practice_max_output_tokens（按模型钳制）。
     practice_max_output_tokens: int = 8192
+    # 批量考点出题工具单次 items_json 最多条数（防单次请求过久/超时）。
+    practice_batch_max_knowledge_points: int = 8
 
     data_dir: Path = _default_data_dir()
     kaiti_font_path: str | None = None

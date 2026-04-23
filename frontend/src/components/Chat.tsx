@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useStreamJobs, type StreamArtifact } from "../context/StreamJobsContext";
 import { displayUserMessageContent, textForChatDisplay } from "../utils/chatDisplay";
@@ -13,6 +13,23 @@ type ChatProps = {
   onConversationActivity?: () => void;
 };
 
+function parsePageRanges(s: string): number[][] | null {
+  const parts = s
+    .split(/[,，]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const out: number[][] = [];
+  for (const p of parts) {
+    const m = p.match(/^(\d+)\s*[-–~～]\s*(\d+)$/);
+    if (!m) return null;
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (a < 1 || b < 1 || a > b) return null;
+    out.push([a, b]);
+  }
+  return out.length ? out : null;
+}
+
 export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const { getJob, startStream, clearStreamError } = useStreamJobs();
   const job = getJob(conversationId);
@@ -24,7 +41,14 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const [file, setFile] = useState<File | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [artifacts, setArtifacts] = useState<StreamArtifact[]>([]);
+  const [papers, setPapers] = useState<
+    { id: string; source_type: string; raw_path: string | null }[]
+  >([]);
+  const [splitRanges, setSplitRanges] = useState("");
+  const [splitBusy, setSplitBusy] = useState(false);
+  const [splitNote, setSplitNote] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const conversationIdRef = useRef(conversationId);
 
   conversationIdRef.current = conversationId;
@@ -34,6 +58,32 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const statusHint = job.statusHint;
   const displayArtifacts =
     job.busy && job.artifacts.length > 0 ? job.artifacts : artifacts;
+
+  const loadPapers = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/conversations/${conversationId}/papers`);
+      if (!r.ok) return;
+      const j = await r.json();
+      setPapers(j.papers || []);
+    } catch {
+      setPapers([]);
+    }
+  }, [conversationId]);
+
+  useEffect(() => {
+    void loadPapers();
+  }, [conversationId, streamRefreshNonce, loadPapers]);
+
+  const splitTarget = useMemo(() => {
+    const pdf = papers.filter((x) => x.source_type === "pdf" && x.raw_path);
+    if (!pdf.length) return null;
+    const sid = job.streamPaperId;
+    if (sid) {
+      const hit = pdf.find((x) => x.id === sid);
+      if (hit) return hit;
+    }
+    return pdf[0] ?? null;
+  }, [papers, job.streamPaperId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -46,56 +96,105 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     clearStreamError(conversationId);
   }, [job.streamError, conversationId, clearStreamError]);
 
+  const loadThread = useCallback(async (cid: string, isStale?: () => boolean) => {
+    const stale = isStale ?? (() => conversationIdRef.current !== cid);
+    try {
+      const [mRes, aRes] = await Promise.all([
+        fetch(`${API}/api/conversations/${cid}/messages`),
+        fetch(`${API}/api/conversations/${cid}/artifacts`),
+      ]);
+      if (stale()) return;
+      if (!mRes.ok) {
+        setBubbles([]);
+        setArtifacts([]);
+        return;
+      }
+      const mj = await mRes.json();
+      if (stale()) return;
+      const next: Bubble[] = [];
+      for (const msg of mj.messages || []) {
+        if (msg.role === "user") {
+          next.push({
+            role: "user",
+            text: displayUserMessageContent(String(msg.content || "")),
+          });
+        } else if (msg.role === "assistant") {
+          next.push({
+            role: "assistant",
+            text: textForChatDisplay(String(msg.content || "")),
+          });
+        }
+      }
+      setBubbles(next);
+      if (aRes.ok) {
+        const aj = await aRes.json();
+        if (stale()) return;
+        setArtifacts((aj.items || []) as StreamArtifact[]);
+      } else {
+        setArtifacts([]);
+      }
+    } catch {
+      if (!stale() && conversationIdRef.current === cid) {
+        setBubbles([]);
+        setArtifacts([]);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     const cid = conversationId;
     let cancelled = false;
-    (async () => {
-      try {
-        const [mRes, aRes] = await Promise.all([
-          fetch(`${API}/api/conversations/${cid}/messages`),
-          fetch(`${API}/api/conversations/${cid}/artifacts`),
-        ]);
-        if (cancelled || conversationIdRef.current !== cid) return;
-        if (!mRes.ok) {
-          setBubbles([]);
-          setArtifacts([]);
-          return;
-        }
-        const mj = await mRes.json();
-        if (cancelled || conversationIdRef.current !== cid) return;
-        const next: Bubble[] = [];
-        for (const msg of mj.messages || []) {
-          if (msg.role === "user") {
-            next.push({
-              role: "user",
-              text: displayUserMessageContent(String(msg.content || "")),
-            });
-          } else if (msg.role === "assistant") {
-            next.push({
-              role: "assistant",
-              text: textForChatDisplay(String(msg.content || "")),
-            });
-          }
-        }
-        setBubbles(next);
-        if (aRes.ok) {
-          const aj = await aRes.json();
-          if (cancelled || conversationIdRef.current !== cid) return;
-          setArtifacts((aj.items || []) as StreamArtifact[]);
-        } else {
-          setArtifacts([]);
-        }
-      } catch {
-        if (!cancelled && conversationIdRef.current === cid) {
-          setBubbles([]);
-          setArtifacts([]);
-        }
-      }
-    })();
+    const stale = () => cancelled || conversationIdRef.current !== cid;
+    void loadThread(cid, stale);
     return () => {
       cancelled = true;
     };
-  }, [conversationId, streamRefreshNonce]);
+  }, [conversationId, streamRefreshNonce, loadThread]);
+
+  /** 刷新后 SSE 已断但服务端仍在生成时，轮询消息与附件直至后台任务结束。 */
+  useEffect(() => {
+    const cid = conversationId;
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const stale = () => cancelled || conversationIdRef.current !== cid;
+
+    void (async () => {
+      try {
+        const st = await fetch(`${API}/api/conversations/${cid}/agent-run-active`);
+        if (!st.ok || stale()) return;
+        const j = (await st.json()) as { active?: boolean };
+        if (!j.active) return;
+        await loadThread(cid, stale);
+        interval = setInterval(() => {
+          void (async () => {
+            try {
+              const st2 = await fetch(`${API}/api/conversations/${cid}/agent-run-active`);
+              if (!st2.ok || stale()) return;
+              const j2 = (await st2.json()) as { active?: boolean };
+              if (stale()) return;
+              if (j2.active) {
+                await loadThread(cid, stale);
+              } else {
+                if (interval) clearInterval(interval);
+                interval = undefined;
+                await loadThread(cid, stale);
+                onConversationActivity?.();
+              }
+            } catch {
+              /* ignore */
+            }
+          })();
+        }, 2200);
+      } catch {
+        /* ignore */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, [conversationId, loadThread, onConversationActivity]);
 
   const send = useCallback(async () => {
     if (busy) return;
@@ -117,9 +216,10 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     startStream(requestCid, fd, {
       onComplete: () => {
         onConversationActivity?.();
+        void loadPapers();
       },
     });
-  }, [busy, conversationId, file, input, onConversationActivity, sourceType, startStream, url]);
+  }, [busy, conversationId, file, input, loadPapers, onConversationActivity, sourceType, startStream, url]);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 md:pl-2">
@@ -211,6 +311,87 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         </div>
       )}
 
+      {splitTarget && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-xs text-slate-600">
+          <div className="font-medium text-slate-800">
+            按页拆分 PDF（目标材料 id：{splitTarget.id.slice(0, 8)}…）
+          </div>
+          <p className="mt-1">
+            用逗号分隔多个区间，如 <span className="rounded bg-white px-1 font-mono">1-3, 5-7</span>
+            （从 1 起算，闭区间）。拆分后生成新材料；后续对话默认仍绑定当前轮次的 paper_id，请在消息里说明要用的材料 id。
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              className="min-w-[180px] flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono"
+              placeholder="例：1-4, 5-10"
+              value={splitRanges}
+              onChange={(e) => setSplitRanges(e.target.value)}
+              disabled={splitBusy}
+            />
+            <button
+              type="button"
+              disabled={splitBusy}
+              className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-1 text-sky-900 hover:bg-sky-100 disabled:opacity-50"
+              onClick={() => void (async () => {
+                setSplitNote(null);
+                const ranges = parsePageRanges(splitRanges);
+                if (!ranges) {
+                  setSplitNote("页码格式不对，请使用 起始-结束，多个用逗号分隔。");
+                  return;
+                }
+                setSplitBusy(true);
+                try {
+                  const res = await fetch(
+                    `${API}/api/exam-papers/${splitTarget.id}/split-by-pages`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        conversation_id: conversationId,
+                        ranges,
+                      }),
+                    },
+                  );
+                  const j = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    const d = j.detail as unknown;
+                    const msg =
+                      typeof d === "string"
+                        ? d
+                        : Array.isArray(d)
+                          ? d
+                              .map((x: { msg?: string }) =>
+                                typeof x === "object" && x && "msg" in x
+                                  ? String((x as { msg?: string }).msg)
+                                  : JSON.stringify(x),
+                              )
+                              .join("; ")
+                          : "拆分失败";
+                    setSplitNote(msg);
+                    return;
+                  }
+                  const ids = (j.new_papers || []) as { id: string; label?: string }[];
+                  const idLine = ids.map((x) => `${x.label ?? "新材料"}: ${x.id.slice(0, 8)}…`).join("；");
+                  setSplitNote(
+                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
+                  );
+                  setSplitRanges("");
+                  await loadPapers();
+                  onConversationActivity?.();
+                } catch {
+                  setSplitNote("网络错误，请重试。");
+                } finally {
+                  setSplitBusy(false);
+                }
+              })()}
+            >
+              {splitBusy ? "拆分中…" : "拆分"}
+            </button>
+          </div>
+          {splitNote && <p className="mt-2 whitespace-pre-wrap text-emerald-900">{splitNote}</p>}
+        </div>
+      )}
+
       <div className="mt-4 space-y-2 rounded-2xl border border-white/60 bg-white/80 p-3 shadow-md backdrop-blur">
         <div className="flex flex-wrap gap-2 text-xs text-slate-600">
           <label className="flex items-center gap-1">
@@ -239,6 +420,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
             <span>📎</span>
             <span>选择文件</span>
             <input
+              ref={fileInputRef}
               type="file"
               className="hidden"
               accept=".pdf,.docx"
@@ -246,7 +428,21 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
             />
           </label>
         </div>
-        {file && <p className="text-xs text-slate-500">已选：{file.name}</p>}
+        {file && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            <span>已选：{file.name}</span>
+            <button
+              type="button"
+              className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
+              onClick={() => {
+                setFile(null);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+            >
+              清除
+            </button>
+          </div>
+        )}
         <div className="flex gap-2">
           <textarea
             className="min-h-[72px] flex-1 resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-300 focus:outline-none focus:ring-1 focus:ring-sky-200"

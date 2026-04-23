@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+
+import matplotlib.image as mpimg
 import pytest
 
 from app.models.schemas import (
@@ -7,11 +10,17 @@ from app.models.schemas import (
     PracticeCircuitEdge,
     PracticeCircuitNode,
     PracticeCircuitSpec,
+    PracticeCircuitVia,
     PracticeCompositePanelBar,
     PracticeCompositePanelCircuit,
     PracticeCompositePanelPlot,
     PracticeCompositePanelSvg,
     PracticeCompositeSpec,
+    PracticeDirectedGraphEdge,
+    PracticeDirectedGraphNode,
+    PracticeDirectedGraphSpec,
+    PracticeElectrochemicalCellSpec,
+    PracticeEnergyProfileSpec,
     PracticeFlowchartEdge,
     PracticeFlowchartNode,
     PracticeFlowchartSpec,
@@ -25,14 +34,24 @@ from app.models.schemas import (
     PracticeGroupedBarSpec,
     PracticeHistogramSpec,
     PracticeNumberLineMark,
+    PracticeNumberLineInterval,
     PracticeNumberLineSpec,
+    PracticePedigreeDescent,
+    PracticePedigreeIndividual,
+    PracticePedigreeMarriage,
+    PracticePedigreeSpec,
     PracticePieSpec,
+    PracticeProbabilityTreeNode,
+    PracticeProbabilityTreeSpec,
     PracticePlotFillBetween,
     PracticePlotSeries,
     PracticePlotSpec,
     PracticePoint2D,
     PracticeQuestion,
     PracticeSegment,
+    PracticeSolidEdge,
+    PracticeSolidVertex3D,
+    PracticeSolidWireframeSpec,
     PracticeSvgSpec,
     PracticeTableSpec,
     PracticeTimelineItem,
@@ -50,13 +69,26 @@ from app.services.practice_figure_render import (
     render_histogram_to_png_bytes,
     render_number_line_to_png_bytes,
     render_pie_to_png_bytes,
+    render_pedigree_to_png_bytes,
+    render_directed_graph_to_png_bytes,
+    render_electrochemical_cell_to_png_bytes,
+    render_energy_profile_to_png_bytes,
     render_plot_to_png_bytes,
+    render_probability_tree_to_png_bytes,
     render_question_figure_to_png_bytes,
     render_question_figure_with_diag,
+    render_solid_wireframe_to_png_bytes,
     render_table_to_png_bytes,
     render_timeline_to_png_bytes,
     render_venn_to_png_bytes,
 )
+
+
+def _load_png_float_rgb(png_bytes: bytes):
+    img = mpimg.imread(io.BytesIO(png_bytes), format="png")
+    if getattr(img, "dtype", None) is not None and img.dtype.kind in ("u", "i"):
+        img = img.astype("float32") / 255.0
+    return img[..., :3]
 
 
 def test_render_plot_to_png_bytes_minimal():
@@ -450,6 +482,65 @@ def test_render_force_diagram_minimal():
     assert len(b) > 200
 
 
+def test_render_force_diagram_block_normalize_axes_hint():
+    spec = PracticeForceDiagramSpec(
+        forces=[
+            PracticeForceItem(x0=0, y0=0, x1=0.3, y1=0, label="F1"),
+            PracticeForceItem(x0=0, y0=0, x1=0, y1=0.9, label="F2"),
+        ],
+        object_style="block",
+        object_x=0,
+        object_y=0,
+        normalize_force_lengths=True,
+        show_axes_hint=True,
+    )
+    b = render_force_diagram_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_solid_wireframe_oblique():
+    spec = PracticeSolidWireframeSpec(
+        title="斜二测",
+        projection="oblique",
+        vertices=[
+            PracticeSolidVertex3D(id="A", x=0, y=0, z=0),
+            PracticeSolidVertex3D(id="B", x=1.2, y=0, z=0),
+            PracticeSolidVertex3D(id="C", x=1.2, y=0, z=0.8),
+            PracticeSolidVertex3D(id="D", x=0, y=0, z=0.8),
+        ],
+        edges=[
+            PracticeSolidEdge(a="A", b="B"),
+            PracticeSolidEdge(a="B", b="C"),
+            PracticeSolidEdge(a="C", b="D"),
+            PracticeSolidEdge(a="D", b="A"),
+        ],
+    )
+    b = render_solid_wireframe_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_pedigree_proband_legend():
+    spec = PracticePedigreeSpec(
+        individuals=[
+            PracticePedigreeIndividual(id="p1", generation=0, sex="male", carrier=True),
+            PracticePedigreeIndividual(id="p2", generation=0, sex="female", deceased=True),
+            PracticePedigreeIndividual(id="c1", generation=1, sex="male", affected=True),
+        ],
+        marriages=[PracticePedigreeMarriage(left="p1", right="p2")],
+        descents=[PracticePedigreeDescent(mother="p2", father="p1", child="c1")],
+        proband_id="c1",
+        show_legend=True,
+    )
+    b = render_pedigree_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_render_circuit_simple_series():
     spec = PracticeCircuitSpec(
         title="串联",
@@ -466,6 +557,265 @@ def test_render_circuit_simple_series():
     b = render_circuit_simple_to_png_bytes(spec)
     assert b is not None
     assert len(b) > 200
+
+
+def test_render_circuit_capacitor_branch():
+    spec = PracticeCircuitSpec(
+        title="电容",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=1.2, y=0),
+        ],
+        edges=[PracticeCircuitEdge(source="a", target="b", element="capacitor")],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 150
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_circuit_parallel_resistors_smoke():
+    spec = PracticeCircuitSpec(
+        title="并联示意",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=2, y=0),
+            PracticeCircuitNode(id="m1", x=1, y=0.6),
+            PracticeCircuitNode(id="m2", x=1, y=-0.6),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="a", target="m1", element="wire"),
+            PracticeCircuitEdge(source="m1", target="b", element="resistor"),
+            PracticeCircuitEdge(source="a", target="m2", element="wire"),
+            PracticeCircuitEdge(source="m2", target="b", element="resistor"),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+
+
+def test_render_circuit_via_polyline_smoke():
+    spec = PracticeCircuitSpec(
+        title="折线",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=2, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(
+                source="a",
+                target="b",
+                element="wire",
+                via=[PracticeCircuitVia(x=1.0, y=0.7)],
+            ),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 150
+
+
+def test_render_circuit_ammeter_voltmeter_series_smoke():
+    spec = PracticeCircuitSpec(
+        title="表计",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=1, y=0),
+            PracticeCircuitNode(id="c", x=2, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="a", target="b", element="ammeter"),
+            PracticeCircuitEdge(source="b", target="c", element="voltmeter"),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+
+
+def test_render_circuit_star_hub_degree3_junction():
+    """中心节点度≥3 时应渲染实心结点（教材 T 型汇点）。"""
+    spec = PracticeCircuitSpec(
+        title="星形",
+        nodes=[
+            PracticeCircuitNode(id="hub", x=1.0, y=1.0),
+            PracticeCircuitNode(id="A", x=0.0, y=1.0),
+            PracticeCircuitNode(id="B", x=1.0, y=0.0),
+            PracticeCircuitNode(id="C", x=2.0, y=1.0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="hub", target="A", element="wire"),
+            PracticeCircuitEdge(source="hub", target="B", element="resistor"),
+            PracticeCircuitEdge(source="hub", target="C", element="wire"),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 400
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_circuit_resistor_keeps_center_body_clear_of_wire():
+    """完整器件电阻应有引脚与本体，中心不应被整根导线贯穿。"""
+    spec = PracticeCircuitSpec(
+        title="完整电阻",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=2.4, y=0),
+        ],
+        edges=[PracticeCircuitEdge(source="a", target="b", element="resistor")],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    img = _load_png_float_rgb(b)
+    h, w = img.shape[:2]
+    center_half_w = max(20, w // 10)
+    center_cols = img[:, w // 2 - center_half_w : w // 2 + center_half_w, :]
+    dark_mask = (1.0 - center_cols.mean(axis=2)) > 0.25
+    wire_row = int(dark_mask.sum(axis=1).argmax())
+    center_span = dark_mask[wire_row, center_half_w - 20 : center_half_w + 21]
+    assert int(center_span.sum()) <= 12
+
+
+def test_render_circuit_extended_components_smoke():
+    spec = PracticeCircuitSpec(
+        title="扩展元件",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=1.2, y=0),
+            PracticeCircuitNode(id="c", x=2.4, y=0),
+            PracticeCircuitNode(id="d", x=3.6, y=0),
+            PracticeCircuitNode(id="e", x=4.8, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="a", target="b", element="battery"),
+            PracticeCircuitEdge(source="b", target="c", element="rheostat"),
+            PracticeCircuitEdge(source="c", target="d", element="fuse"),
+            PracticeCircuitEdge(source="d", target="e", element="diode"),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 220
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_circuit_switch_open_closed_states_differ():
+    open_spec = PracticeCircuitSpec(
+        title="开关状态",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=1.4, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="a", target="b", element="switch", switch_state="open"),
+        ],
+    )
+    closed_spec = PracticeCircuitSpec(
+        title="开关状态",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=1.4, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="a", target="b", element="switch", switch_state="closed"),
+        ],
+    )
+    open_png = render_circuit_simple_to_png_bytes(open_spec)
+    closed_png = render_circuit_simple_to_png_bytes(closed_spec)
+    assert open_png is not None and closed_png is not None
+    assert open_png != closed_png
+
+
+def test_render_circuit_rheostat_slider_position_changes_symbol():
+    left_spec = PracticeCircuitSpec(
+        title="滑动变阻器",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=2.2, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(
+                source="a",
+                target="b",
+                element="rheostat",
+                slider_position=0.2,
+            ),
+        ],
+    )
+    right_spec = PracticeCircuitSpec(
+        title="滑动变阻器",
+        nodes=[
+            PracticeCircuitNode(id="a", x=0, y=0),
+            PracticeCircuitNode(id="b", x=2.2, y=0),
+        ],
+        edges=[
+            PracticeCircuitEdge(
+                source="a",
+                target="b",
+                element="rheostat",
+                slider_position=0.8,
+            ),
+        ],
+    )
+    left_png = render_circuit_simple_to_png_bytes(left_spec)
+    right_png = render_circuit_simple_to_png_bytes(right_spec)
+    assert left_png is not None and right_png is not None
+    assert left_png != right_png
+
+
+def test_render_circuit_dual_meter_parallel_series_layout_smoke():
+    spec = PracticeCircuitSpec(
+        title="双电表标准布局",
+        nodes=[
+            PracticeCircuitNode(id="lt", x=0.0, y=1.0),
+            PracticeCircuitNode(id="mt", x=1.3, y=1.0),
+            PracticeCircuitNode(id="rt", x=2.6, y=1.0),
+            PracticeCircuitNode(id="lb", x=0.0, y=0.0),
+            PracticeCircuitNode(id="rb", x=2.6, y=0.0),
+        ],
+        edges=[
+            PracticeCircuitEdge(source="lt", target="mt", element="ammeter"),
+            PracticeCircuitEdge(source="mt", target="rt", element="resistor"),
+            PracticeCircuitEdge(source="rt", target="rb", element="wire"),
+            PracticeCircuitEdge(source="rb", target="lb", element="wire"),
+            PracticeCircuitEdge(source="lb", target="lt", element="battery"),
+            PracticeCircuitEdge(source="mt", target="rb", element="voltmeter"),
+        ],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 260
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_probability_tree_smoke():
+    spec = PracticeProbabilityTreeSpec(
+        nodes=[
+            PracticeProbabilityTreeNode(id="r", text="根", parent_id=""),
+            PracticeProbabilityTreeNode(id="l", text="叶", parent_id="r", edge_label="0.5"),
+        ],
+    )
+    b = render_probability_tree_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_directed_graph_layered_smoke():
+    spec = PracticeDirectedGraphSpec(
+        layout="layered",
+        nodes=[
+            PracticeDirectedGraphNode(id="a", text="A", layer=0),
+            PracticeDirectedGraphNode(id="b", text="B", layer=1),
+        ],
+        edges=[PracticeDirectedGraphEdge(source="a", target="b", label="→")],
+    )
+    b = render_directed_graph_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 200
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_render_flowchart_layered_chain():
@@ -594,3 +944,90 @@ def test_render_question_figure_with_diag_kind_spec_mismatch():
     png, reason = render_question_figure_with_diag(q)
     assert png is None
     assert "kind_spec_mismatch" in reason
+
+
+def test_render_number_line_open_closed_interval_schema_fields():
+    spec = PracticeNumberLineSpec(
+        x_min=-2.0,
+        x_max=3.0,
+        auto_ticks=False,
+        show_axis_arrows=True,
+        intervals=[PracticeNumberLineInterval(a=-1.0, b=2.0, open_left=True, open_right=False)],
+        marks=[PracticeNumberLineMark(x=-1.0, label="-1"), PracticeNumberLineMark(x=2.0, label="2")],
+    )
+    b = render_number_line_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 120
+
+
+def test_render_flowchart_shapes_and_edge_labels_smoke():
+    spec = PracticeFlowchartSpec(
+        layout="layered",
+        nodes=[
+            PracticeFlowchartNode(id="s", text="开始", shape="start_end"),
+            PracticeFlowchartNode(id="q", text="判断", shape="decision"),
+            PracticeFlowchartNode(id="d", text="数据", shape="data"),
+        ],
+        edges=[
+            PracticeFlowchartEdge(source="s", target="q", label="进入"),
+            PracticeFlowchartEdge(source="q", target="d", label="是"),
+        ],
+    )
+    b = render_flowchart_to_png_bytes(spec)
+    assert b is not None
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_energy_profile_custom_endpoint_labels():
+    spec = PracticeEnergyProfileSpec(
+        x=[0.0, 1.0, 2.2],
+        y=[0.2, 1.1, 0.5],
+        barrier_i=0,
+        barrier_j=1,
+        barrier_label="Ea",
+        reactants_label="R",
+        products_label="P",
+    )
+    b = render_energy_profile_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 120
+
+
+def test_render_electrochemical_with_half_reactions():
+    spec = PracticeElectrochemicalCellSpec(
+        left_label="Zn",
+        right_label="Cu",
+        electrolyte_label="ZnSO4 / CuSO4",
+        mode="galvanic",
+        salt_bridge_u=True,
+        half_reaction_left="Zn -> Zn2+ + 2e-",
+        half_reaction_right="Cu2+ + 2e- -> Cu",
+    )
+    b = render_electrochemical_cell_to_png_bytes(spec)
+    assert b is not None
+    assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_circuit_edge_label_smoke():
+    spec = PracticeCircuitSpec(
+        nodes=[PracticeCircuitNode(id="a", x=0, y=0), PracticeCircuitNode(id="b", x=2.0, y=0)],
+        edges=[PracticeCircuitEdge(source="a", target="b", element="resistor", label="R1=10Ω")],
+    )
+    b = render_circuit_simple_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 140
+
+
+def test_render_pedigree_individual_note_smoke():
+    spec = PracticePedigreeSpec(
+        individuals=[
+            PracticePedigreeIndividual(id="p1", generation=0, sex="female", note="母亲"),
+            PracticePedigreeIndividual(id="p2", generation=0, sex="male", note="父亲"),
+            PracticePedigreeIndividual(id="c1", generation=1, sex="male", affected=True, note="先证者"),
+        ],
+        marriages=[PracticePedigreeMarriage(left="p2", right="p1")],
+        descents=[PracticePedigreeDescent(mother="p1", father="p2", child="c1")],
+    )
+    b = render_pedigree_to_png_bytes(spec)
+    assert b is not None
+    assert len(b) > 120

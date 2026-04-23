@@ -259,7 +259,7 @@ def _clamp_solid_wireframe_spec_inner(spec: PracticeSolidWireframeSpec) -> Pract
                 use_mathtext=bool(lb.use_mathtext),
             )
         )
-    proj = spec.projection if spec.projection in ("isometric", "cabinet") else "isometric"
+    proj = spec.projection if spec.projection in ("isometric", "cabinet", "oblique") else "isometric"
     return PracticeSolidWireframeSpec(
         title=(spec.title or "")[:_MAX_FIG_TITLE],
         caption=(spec.caption or "")[:_MAX_FIG_CAPTION],
@@ -451,6 +451,7 @@ def _clamp_pedigree_spec_inner(spec: PracticePedigreeSpec) -> PracticePedigreeSp
                 sex=sx,
                 affected=bool(p.affected),
                 carrier=bool(p.carrier),
+                deceased=bool(p.deceased),
                 x_hint=p.x_hint,
             )
         )
@@ -470,12 +471,17 @@ def _clamp_pedigree_spec_inner(spec: PracticePedigreeSpec) -> PracticePedigreeSp
         ch = (d.child or "").strip()[:32]
         if mo in id_set and fa in id_set and ch in id_set and mo != fa:
             descents.append(PracticePedigreeDescent(mother=mo, father=fa, child=ch))
+    pb = (spec.proband_id or "").strip()[:32]
+    if pb and pb not in id_set:
+        pb = ""
     return PracticePedigreeSpec(
         title=(spec.title or "")[:_MAX_FIG_TITLE],
         caption=(spec.caption or "")[:_MAX_FIG_CAPTION],
         individuals=inds,
         marriages=marriages,
         descents=descents,
+        proband_id=pb,
+        show_legend=bool(spec.show_legend),
     )
 
 
@@ -523,6 +529,7 @@ def _clamp_electrochemical_cell_spec_inner(spec: PracticeElectrochemicalCellSpec
         electron_cw=bool(spec.electron_cw),
         cation_to=ct,
         anion_to=at,
+        salt_bridge_u=bool(spec.salt_bridge_u),
     )
 
 
@@ -1116,6 +1123,7 @@ def _clamp_composite_panel(
             )
         if not forces:
             return None
+        ost = spec.object_style if spec.object_style in ("dot", "block") else "dot"
         return PracticeCompositePanelForceDiagram(
             subtitle=(panel.subtitle or "")[:80],
             spec=PracticeForceDiagramSpec(
@@ -1125,6 +1133,9 @@ def _clamp_composite_panel(
                 object_dot=bool(spec.object_dot),
                 object_x=float(spec.object_x),
                 object_y=float(spec.object_y),
+                object_style=ost,
+                show_axes_hint=bool(spec.show_axes_hint),
+                normalize_force_lengths=bool(spec.normalize_force_lengths),
             ),
         )
     if isinstance(panel, PracticeCompositePanelCircuit):
@@ -1151,18 +1162,33 @@ def _clamp_composite_panel(
                 for v in e.via[:8]
                 if math.isfinite(float(v.x)) and math.isfinite(float(v.y))
             ]
+            slider_position = None
+            if e.slider_position is not None and math.isfinite(float(e.slider_position)):
+                slider_position = min(1.0, max(0.0, float(e.slider_position)))
             el = e.element if e.element in (
                 "wire",
                 "resistor",
                 "cell",
+                "battery",
+                "capacitor",
                 "lamp",
                 "switch",
+                "rheostat",
+                "fuse",
+                "diode",
                 "ammeter",
                 "voltmeter",
                 "generic",
             ) else "wire"
             edges.append(
-                PracticeCircuitEdge(source=s[:32], target=t[:32], element=el, via=vias)
+                PracticeCircuitEdge(
+                    source=s[:32],
+                    target=t[:32],
+                    element=el,
+                    via=vias,
+                    switch_state=e.switch_state if e.switch_state in ("default", "open", "closed") else "default",
+                    slider_position=slider_position,
+                )
             )
         if len(nodes) < 2 or not edges:
             return None
@@ -1552,6 +1578,7 @@ def _sanitize_practice_figures(ps: PracticeSet) -> None:
                 q.figure_kind = "none"
                 q.figure_spec = None
                 continue
+            ost = spec.object_style if spec.object_style in ("dot", "block") else "dot"
             q.figure_spec = PracticeForceDiagramSpec(
                 title=(spec.title or "")[:_MAX_FIG_TITLE],
                 caption=(spec.caption or "")[:_MAX_FIG_CAPTION],
@@ -1559,6 +1586,9 @@ def _sanitize_practice_figures(ps: PracticeSet) -> None:
                 object_dot=bool(spec.object_dot),
                 object_x=float(spec.object_x),
                 object_y=float(spec.object_y),
+                object_style=ost,
+                show_axes_hint=bool(spec.show_axes_hint),
+                normalize_force_lengths=bool(spec.normalize_force_lengths),
             )
             continue
 
@@ -1586,18 +1616,33 @@ def _sanitize_practice_figures(ps: PracticeSet) -> None:
                     for v in e.via[:8]
                     if math.isfinite(float(v.x)) and math.isfinite(float(v.y))
                 ]
+                slider_position = None
+                if e.slider_position is not None and math.isfinite(float(e.slider_position)):
+                    slider_position = min(1.0, max(0.0, float(e.slider_position)))
                 el = e.element if e.element in (
                     "wire",
                     "resistor",
                     "cell",
+                    "battery",
+                    "capacitor",
                     "lamp",
                     "switch",
+                    "rheostat",
+                    "fuse",
+                    "diode",
                     "ammeter",
                     "voltmeter",
                     "generic",
                 ) else "wire"
                 edges.append(
-                    PracticeCircuitEdge(source=s[:32], target=t[:32], element=el, via=vias)
+                    PracticeCircuitEdge(
+                        source=s[:32],
+                        target=t[:32],
+                        element=el,
+                        via=vias,
+                        switch_state=e.switch_state if e.switch_state in ("default", "open", "closed") else "default",
+                        slider_position=slider_position,
+                    )
                 )
             if len(nodes) < 2 or not edges:
                 q.figure_kind = "none"

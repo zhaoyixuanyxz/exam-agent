@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -9,23 +13,40 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import delete_agent_thread, get_agent_graph
+from app.agent.tools import AGENT_TOOLS
 from app.config import settings
 from app.db.models import Conversation, ExamPaper, Message
 from app.db.session import SessionLocal, get_session
 from app.db.sync_session import sync_session
-from app.services.llm_errors import user_message_for_llm_error
-from app.services.parsers.pipeline import parse_input
-from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
+from app.services.agent_thread_repair import repair_dangling_tool_calls
 from app.services.conversation_delete import (
     collect_conversation_file_paths,
     delete_conversation_cascade,
     unlink_conversation_files,
 )
+from app.services.llm_errors import user_message_for_llm_error
+from app.services.parsers.pipeline import parse_input
+from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
 from app.services.storage import new_stored_path
+
+logger = logging.getLogger(__name__)
+
+
+def _markdown_artifact_display_name(filename: str) -> str:
+    """User-facing name for knowledge markdown files on disk."""
+    if filename == "knowledge_points.md":
+        return "考点说明.md"
+    prefix = "考点说明_"
+    if filename.startswith(prefix) and filename.endswith(".md"):
+        pid = filename[len(prefix) : -len(".md")]
+        short = pid[:8] if len(pid) >= 8 else pid
+        return f"考点说明·{short}.md"
+    return filename
 
 
 def _artifact_url(abs_path: str) -> str:
@@ -38,6 +59,29 @@ def _artifact_url(abs_path: str) -> str:
 
 
 router = APIRouter(prefix="/api", tags=["chat"])
+
+_agent_run_tasks: dict[str, asyncio.Task[None]] = {}
+_agent_run_registration_locks: dict[str, asyncio.Lock] = {}
+
+
+def _agent_run_reg_lock(conversation_id: str) -> asyncio.Lock:
+    if conversation_id not in _agent_run_registration_locks:
+        _agent_run_registration_locks[conversation_id] = asyncio.Lock()
+    return _agent_run_registration_locks[conversation_id]
+
+
+def conversation_agent_run_active(conversation_id: str) -> bool:
+    t = _agent_run_tasks.get(conversation_id)
+    return t is not None and not t.done()
+
+
+async def _cancel_agent_run(conversation_id: str) -> None:
+    t = _agent_run_tasks.pop(conversation_id, None)
+    if t is None or t.done():
+        return
+    t.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await t
 
 
 def _sse(data: dict) -> str:
@@ -191,10 +235,17 @@ async def chat_stream(
     if not paper_id and not message.strip() and not file and not (url and url.strip()):
         raise HTTPException(400, "请发送消息、粘贴文本、上传文件或提供 URL")
 
+    pc_r = await session.execute(
+        select(func.count()).select_from(ExamPaper).where(ExamPaper.conversation_id == conversation_id)
+    )
+    paper_count = int(pc_r.scalar_one() or 0)
+
     base_msg = (message.strip() or "请根据我提供的材料开始分析试卷。") + extra_note
     ctx = (
-        f"【系统上下文】conversation_id={conversation_id}；paper_id={paper_id}。"
-        "调用工具时必须使用此 paper_id。\n\n"
+        f"【系统上下文】conversation_id={conversation_id}；paper_id={paper_id}；本会话累计试卷材料份数={paper_count}。"
+        "此 paper_id 为本轮默认绑定材料（一般为最近上传或粘贴的一份）。"
+        "若份数大于 1 且用户未明确针对哪一份，须用简短中文请用户说明目标材料（可提示 paper_id 前 8 位），禁止猜测。"
+        "工具调用的 paper_id 必须与上述 paper_id 一致。\n\n"
     )
     user_content = ctx + base_msg
 
@@ -208,91 +259,127 @@ async def chat_stream(
     await session.commit()
 
     async def gen() -> AsyncIterator[str]:
-        yield _sse({"event": "meta", "data": {"paper_id": paper_id}})
-        out_text = ""
-        streamed_any = False
-        streamed_buf: list[str] = []
-        try:
-            graph = get_agent_graph()
-            config = {"configurable": {"thread_id": conversation_id}}
-            inp = {"messages": [HumanMessage(content=user_content)]}
-            async for part in graph.astream(
-                inp,
-                config,
-                stream_mode=["messages", "tasks"],
-                version="v2",
-            ):
-                ptype = part.get("type")
-                if ptype == "tasks":
-                    td: dict[str, Any] = part.get("data") or {}
-                    if "result" in td:
-                        continue
-                    node = str(td.get("name", ""))
-                    if node == "tools":
-                        yield _sse(
+        out_q: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def agent_runner() -> None:
+            my_task = asyncio.current_task()
+            out_text = ""
+            streamed_any = False
+            streamed_buf: list[str] = []
+            try:
+                graph = get_agent_graph()
+                config = {"configurable": {"thread_id": conversation_id}}
+                await repair_dangling_tool_calls(graph, config, AGENT_TOOLS)
+                await out_q.put(_sse({"event": "meta", "data": {"paper_id": paper_id}}))
+                inp = {"messages": [HumanMessage(content=user_content)]}
+                async for part in graph.astream(
+                    inp,
+                    config,
+                    stream_mode=["messages", "tasks"],
+                    version="v2",
+                ):
+                    ptype = part.get("type")
+                    if ptype == "tasks":
+                        td: dict[str, Any] = part.get("data") or {}
+                        if "result" in td:
+                            continue
+                        node = str(td.get("name", ""))
+                        if node == "tools":
+                            await out_q.put(
+                                _sse(
+                                    {
+                                        "event": "status",
+                                        "data": {
+                                            "message": "正在执行工具（拆题、考点分析或出题等，内部会多次调用模型）…"
+                                        },
+                                    }
+                                )
+                            )
+                        elif node == "agent":
+                            await out_q.put(
+                                _sse(
+                                    {
+                                        "event": "status",
+                                        "data": {"message": "模型生成中…"},
+                                    }
+                                )
+                            )
+                    elif ptype == "messages":
+                        data = part.get("data")
+                        if not data or not isinstance(data, tuple) or len(data) < 1:
+                            continue
+                        msg_chunk, _meta = data[0], data[1] if len(data) > 1 else {}
+                        piece = _text_from_llm_chunk(msg_chunk)
+                        if piece:
+                            streamed_any = True
+                            streamed_buf.append(piece)
+                            await out_q.put(_sse({"event": "token", "data": {"t": piece}}))
+
+                snap = await graph.aget_state(config)
+                values = getattr(snap, "values", None) or {}
+                msgs = list(values.get("messages") or [])
+                out_text = _last_assistant_text(msgs) or "".join(streamed_buf)
+                if not streamed_any and out_text:
+                    await out_q.put(_sse({"event": "token", "data": {"t": out_text}}))
+
+                recovered_pdf = False
+                if paper_id and out_text and not out_text.startswith("（处理出错"):
+                    out_text, recovered_pdf = try_recover_practice_pdf_from_assistant_text(
+                        out_text, paper_id
+                    )
+                if recovered_pdf and streamed_any:
+                    await out_q.put(
+                        _sse(
                             {
-                                "event": "status",
+                                "event": "token",
                                 "data": {
-                                    "message": "正在执行工具（拆题、考点分析或出题等，内部会多次调用模型）…"
+                                    "t": "\n\n（正文中的练习题 JSON 已自动导出为 PDF，见下方「生成文件」）"
                                 },
                             }
                         )
-                    elif node == "agent":
-                        yield _sse(
-                            {
-                                "event": "status",
-                                "data": {"message": "模型生成中…"},
-                            }
-                        )
-                elif ptype == "messages":
-                    data = part.get("data")
-                    if not data or not isinstance(data, tuple) or len(data) < 1:
-                        continue
-                    msg_chunk, _meta = data[0], data[1] if len(data) > 1 else {}
-                    piece = _text_from_llm_chunk(msg_chunk)
-                    if piece:
-                        streamed_any = True
-                        streamed_buf.append(piece)
-                        yield _sse({"event": "token", "data": {"t": piece}})
-
-            snap = await graph.aget_state(config)
-            values = getattr(snap, "values", None) or {}
-            msgs = list(values.get("messages") or [])
-            out_text = _last_assistant_text(msgs) or "".join(streamed_buf)
-            if not streamed_any and out_text:
-                yield _sse({"event": "token", "data": {"t": out_text}})
-
-            recovered_pdf = False
-            if paper_id and out_text and not out_text.startswith("（处理出错"):
-                out_text, recovered_pdf = try_recover_practice_pdf_from_assistant_text(
-                    out_text, paper_id
-                )
-            if recovered_pdf and streamed_any:
-                yield _sse(
-                    {
-                        "event": "token",
-                        "data": {"t": "\n\n（正文中的练习题 JSON 已自动导出为 PDF，见下方「生成文件」）"},
-                    }
-                )
-        except Exception as e:
-            friendly = user_message_for_llm_error(e)
-            yield _sse({"event": "error", "data": {"message": friendly}})
-            out_text = f"（处理出错：{friendly}）"
-
-        if out_text:
-            async with SessionLocal() as write_session:
-                write_session.add(
-                    Message(
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=out_text,
                     )
-                )
-                await write_session.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                friendly = user_message_for_llm_error(e)
+                await out_q.put(_sse({"event": "error", "data": {"message": friendly}}))
+                out_text = f"（处理出错：{friendly}）"
+            finally:
+                if out_text:
+                    try:
+                        async with SessionLocal() as write_session:
+                            write_session.add(
+                                Message(
+                                    conversation_id=conversation_id,
+                                    role="assistant",
+                                    content=out_text,
+                                )
+                            )
+                            await write_session.commit()
+                    except Exception:
+                        logger.exception("persist assistant message failed")
+                try:
+                    artifacts = _list_artifacts_sync(conversation_id)
+                    await out_q.put(_sse({"event": "artifacts", "data": {"items": artifacts}}))
+                    await out_q.put(_sse({"event": "done", "data": {}}))
+                finally:
+                    await out_q.put(None)
+                cur = _agent_run_tasks.get(conversation_id)
+                if cur is my_task:
+                    _agent_run_tasks.pop(conversation_id, None)
 
-        artifacts = _list_artifacts_sync(conversation_id)
-        yield _sse({"event": "artifacts", "data": {"items": artifacts}})
-        yield _sse({"event": "done", "data": {}})
+        async with _agent_run_reg_lock(conversation_id):
+            await _cancel_agent_run(conversation_id)
+            _agent_run_tasks[conversation_id] = asyncio.create_task(agent_runner())
+
+        try:
+            while True:
+                item = await out_q.get()
+                if item is None:
+                    break
+                yield item
+        except asyncio.CancelledError:
+            raise
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -318,8 +405,7 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 if mp not in seen:
                     seen.add(mp)
                     md_name = Path(mp).name
-                    if md_name == "knowledge_points.md":
-                        md_name = "考点说明.md"
+                    md_name = _markdown_artifact_display_name(md_name)
                     items.append(
                         {
                             "kind": "markdown",
@@ -344,6 +430,32 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
         return items
 
 
+@router.get("/conversations/{conversation_id}/papers")
+async def list_conversation_papers(
+    conversation_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    r = await session.execute(
+        select(ExamPaper)
+        .where(ExamPaper.conversation_id == conversation_id)
+        .order_by(ExamPaper.created_at.desc())
+    )
+    papers = r.scalars().all()
+    return {
+        "papers": [
+            {
+                "id": p.id,
+                "source_type": p.source_type,
+                "raw_path": p.raw_path,
+            }
+            for p in papers
+        ]
+    }
+
+
 @router.get("/conversations/{conversation_id}/artifacts")
 async def list_artifacts(
     conversation_id: str,
@@ -355,6 +467,33 @@ async def list_artifacts(
     return {"items": _list_artifacts_sync(conversation_id)}
 
 
+@router.get("/conversations/{conversation_id}/agent-run-active")
+async def get_agent_run_active(
+    conversation_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """当前会话是否仍有后台 Agent 任务在跑（例如用户刷新页面后 SSE 已断、生成仍在继续）。"""
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    return {"active": conversation_agent_run_active(conversation_id)}
+
+
+_RE_INJECTED_FILE_PREVIEW = re.compile(
+    r"\n\n【用户上传了试卷文件，paper_id=[^】]+】\n正文预览：\n[\s\S]*$",
+)
+_RE_INJECTED_URL_PREVIEW = re.compile(
+    r"\n\n【来自 URL，paper_id=[^】]+】\n内容预览：\n[\s\S]*$",
+)
+
+
+def _strip_injected_previews_from_user_body(s: str) -> str:
+    """与前端 displayUserMessageContent 一致：列表预览不展示 OCR 注入块。"""
+    s = _RE_INJECTED_FILE_PREVIEW.sub("", s)
+    s = _RE_INJECTED_URL_PREVIEW.sub("", s)
+    return s
+
+
 def _preview_from_user_content(content: str | None, max_len: int = 80) -> str:
     if not content:
         return ""
@@ -364,6 +503,7 @@ def _preview_from_user_content(content: str | None, max_len: int = 80) -> str:
         idx = s.find("\n\n")
         if idx != -1:
             s = s[idx + 2 :].strip()
+    s = _strip_injected_previews_from_user_body(s).strip()
     if len(s) <= max_len:
         return s
     return s[: max_len - 1] + "…"
@@ -461,6 +601,27 @@ async def get_conversation_messages(
     }
 
 
+class ConversationTitlePatch(BaseModel):
+    """用户自定义对话名称；空字符串表示清除标题，列表仍显示首条消息预览。"""
+
+    title: str = Field(default="", max_length=512)
+
+
+@router.patch("/conversations/{conversation_id}")
+async def patch_conversation(
+    conversation_id: str,
+    body: ConversationTitlePatch,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    stripped = (body.title or "").strip()
+    conv.title = stripped if stripped else None
+    await session.commit()
+    return {"ok": True, "title": conv.title}
+
+
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
@@ -469,6 +630,7 @@ async def delete_conversation(
     conv = await session.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(404, "conversation not found")
+    await _cancel_agent_run(conversation_id)
     paths, export_dir = collect_conversation_file_paths(conversation_id)
     await delete_conversation_cascade(session, conversation_id)
     await delete_agent_thread(conversation_id)

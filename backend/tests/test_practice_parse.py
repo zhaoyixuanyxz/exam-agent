@@ -437,6 +437,85 @@ def test_repair_figure_force_diagram_and_circuit():
     assert ps.questions[1].figure_kind == "circuit_simple"
 
 
+def test_repair_circuit_preserves_extended_component_kinds():
+    d = {
+        "knowledge_point_key": "k",
+        "knowledge_point_name": "n",
+        "questions": [
+            {
+                "order_index": 1,
+                "qtype": "填空",
+                "stem": "扩展电路",
+                "options": [],
+                "answer_outline": "略",
+                "figure_kind": "circuit_simple",
+                "figure_spec": {
+                    "nodes": [
+                        {"id": "a", "x": 0, "y": 0},
+                        {"id": "b", "x": 1, "y": 0},
+                        {"id": "c", "x": 2, "y": 0},
+                        {"id": "d", "x": 3, "y": 0},
+                        {"id": "e", "x": 4, "y": 0},
+                    ],
+                    "edges": [
+                        {"source": "a", "target": "b", "element": "battery"},
+                        {"source": "b", "target": "c", "element": "rheostat"},
+                        {"source": "c", "target": "d", "element": "fuse"},
+                        {"source": "d", "target": "e", "element": "diode"},
+                    ],
+                },
+            }
+        ],
+    }
+    r = repair_practice_dict(d)
+    ps = PracticeSet.model_validate(r)
+    elements = [e.element for e in ps.questions[0].figure_spec.edges]
+    assert elements == ["battery", "rheostat", "fuse", "diode"]
+
+
+def test_repair_circuit_preserves_switch_and_slider_metadata():
+    d = {
+        "knowledge_point_key": "k",
+        "knowledge_point_name": "n",
+        "questions": [
+            {
+                "order_index": 1,
+                "qtype": "填空",
+                "stem": "教材电路",
+                "options": [],
+                "answer_outline": "略",
+                "figure_kind": "circuit_simple",
+                "figure_spec": {
+                    "nodes": [
+                        {"id": "a", "x": 0, "y": 0},
+                        {"id": "b", "x": 1, "y": 0},
+                        {"id": "c", "x": 2, "y": 0},
+                    ],
+                    "edges": [
+                        {
+                            "source": "a",
+                            "target": "b",
+                            "element": "switch",
+                            "switch_state": "closed",
+                        },
+                        {
+                            "source": "b",
+                            "target": "c",
+                            "element": "rheostat",
+                            "slider_position": 0.75,
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+    r = repair_practice_dict(d)
+    ps = PracticeSet.model_validate(r)
+    edges = ps.questions[0].figure_spec.edges
+    assert edges[0].switch_state == "closed"
+    assert edges[1].slider_position == 0.75
+
+
 def test_repair_figure_solid_wireframe_and_field_lines():
     d = {
         "knowledge_point_key": "k",

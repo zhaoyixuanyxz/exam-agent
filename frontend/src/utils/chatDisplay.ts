@@ -255,10 +255,22 @@ function stripTrailingBulkPracticeJson(s: string): string {
   return s;
 }
 
+/**
+ * 服务端为让模型看到解析结果，会把「正文预览」拼进 user message 落库；前端发送时气泡只显示「📎 上传」。
+ * 重新打开会话时若不去掉该块，会出现整卷 OCR 正文。此处与 chat.py 中 _strip_injected_previews 保持一致。
+ */
+function stripInjectedMaterialPreviewBlocks(s: string): string {
+  let out = s;
+  out = out.replace(/\n\n【用户上传了试卷文件，paper_id=[^】]+】\n正文预览：\n[\s\S]*$/u, "");
+  out = out.replace(/\n\n【来自 URL，paper_id=[^】]+】\n内容预览：\n[\s\S]*$/u, "");
+  return out;
+}
+
 /** 历史消息：去掉落库时的系统前缀，避免把 thread/paper 上下文展示给用户。 */
 export function displayUserMessageContent(raw: string, maxLen = 4000): string {
   if (!raw) return "";
   let s = raw.replace(/^【系统上下文】[\s\S]*?\n\n/u, "").trim();
+  s = stripInjectedMaterialPreviewBlocks(s).trim();
   if (s.length > maxLen) {
     return `${s.slice(0, maxLen - 1)}…`;
   }

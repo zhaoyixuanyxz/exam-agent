@@ -27,6 +27,8 @@ type JobSnapshot = {
   artifacts: StreamArtifact[];
   refreshNonce: number;
   streamError: string | null;
+  /** 最近一次流式轮次 meta 中的 paper_id（用于按页拆分等） */
+  streamPaperId: string | null;
 };
 
 function emptyJob(): JobSnapshot {
@@ -37,6 +39,7 @@ function emptyJob(): JobSnapshot {
     artifacts: [],
     refreshNonce: 0,
     streamError: null,
+    streamPaperId: null,
   };
 }
 
@@ -120,6 +123,7 @@ export function StreamJobsProvider({ children }: { children: ReactNode }) {
           statusHint: "",
           artifacts: [],
           streamError: null,
+          streamPaperId: null,
         },
       }));
 
@@ -155,6 +159,17 @@ export function StreamJobsProvider({ children }: { children: ReactNode }) {
                 ev = JSON.parse(line);
               } catch {
                 continue;
+              }
+              if (ev.event === "meta" && ev.data?.paper_id != null) {
+                const pid = String(ev.data.paper_id);
+                setJobs((prev) => {
+                  const cur = prev[conversationId] ?? emptyJob();
+                  if (!cur.busy) return prev;
+                  return {
+                    ...prev,
+                    [conversationId]: { ...cur, streamPaperId: pid },
+                  };
+                });
               }
               if (ev.event === "status" && ev.data?.message) {
                 setJobs((prev) => {
@@ -229,7 +244,22 @@ export function StreamJobsProvider({ children }: { children: ReactNode }) {
           }
         } finally {
           controllersRef.current.delete(conversationId);
-          if (signal.aborted || failed) return;
+          if (failed) return;
+          if (signal.aborted) {
+            setJobs((prev) => {
+              const cur = prev[conversationId] ?? emptyJob();
+              return {
+                ...prev,
+                [conversationId]: {
+                  ...cur,
+                  busy: false,
+                  streaming: "",
+                  statusHint: "",
+                },
+              };
+            });
+            return;
+          }
           setJobs((prev) => {
             const cur = prev[conversationId] ?? emptyJob();
             return {

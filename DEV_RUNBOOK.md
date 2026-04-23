@@ -42,6 +42,12 @@ python -m venv .venv
 
 - `DEEPSEEK_API_KEY`：必填，否则 Agent 调用模型会失败。
 - `KAITI_FONT_PATH`：可选；未设置时会在 Windows 常见路径查找楷体。PDF 生成报字体错误时，设为本地 `.ttf` 绝对路径。
+- `FIGURE_EXPORT_DPI`：可选；练习 PDF 中 matplotlib 栅格图（及 composite 内 SVG 栅格）的导出分辨率，默认 `168`，有效范围约 `72`～`600`。印刷试跑时可提高到 `200`～`300`。
+- `FIGURE_TEXTBOOK_STYLE`：可选；设为 `1` / `true` / `yes` 时略微压低网格透明度、加大标题与轴间距，使折线/柱状等更像教材排版。直角坐标图（plot/bar/histogram 等）的网格透明度另由 `practice_figure_theme.chart_grid_alpha` 与上述开关共同决定。
+
+练习配图线宽、流程图箭头、场线/光路线型等集中在 `backend/app/services/practice_figure_theme.py`，修改风格时优先改该文件再视需要微调渲染逻辑。
+
+`circuit_simple` 支持的元件类型见 `PracticeCircuitElement`（含 wire、resistor、cell、capacitor、lamp、switch、ammeter、voltmeter、generic）；节点为数据坐标，可用 `via` 折点绘制非直导线。
 
 若出现 **401** 且提示里带 `****-key`：多半是系统里曾配置过 **`OPENAI_API_KEY=missing-key`** 等错误值。本应用会**优先使用 `backend/.env` 文件中的 `DEEPSEEK_API_KEY`**；仍异常时请打开「系统属性 → 环境变量」检查用户/系统中是否有多余的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`，删掉或改正后重启终端与后端。
 
@@ -124,6 +130,17 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 与 **`PRACTICE_PDF_INLINE_MATHTEXT`** 同时开启时的优先级：**先 LaTeX 子系统（分流命中）→ 再 matplotlib mathtext → 再 Unicode 扁平化**。
 
 集成测试：`pytest -m katex`（需 `RUN_KATEX_INTEGRATION=1` 且已安装 Playwright 与浏览器）。
+
+## SSE 与反向代理超时
+
+对话接口 `POST /api/chat/stream` 为 **长连接 SSE**。若经 **Nginx / Caddy / 云网关** 转发，默认 `proxy_read_timeout`（或等价项）过短时，可能在模型或工具仍在执行时**被中间层断开**，前端表现为请求失败或流中断。
+
+**缓解**（按所用代理查阅官方文档核对指令名）：
+
+- **Nginx**：对转发到本后端的 `location` 增大 `proxy_read_timeout`（例如 `300s` 或更高），并确保 `proxy_buffering off` 或合理缓冲以免首包延迟。
+- **Caddy**：使用 `flush_interval`、适当增大与上游读相关的超时（版本差异大，以当前 Caddyfile 文档为准）。
+
+本地直连 `uvicorn` 一般无此问题。整体响应速度优化与模型侧专项无关，本条仅作部署层缓解说明。
 
 ## 仍无法解决时
 

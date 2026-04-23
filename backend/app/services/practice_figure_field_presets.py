@@ -34,15 +34,20 @@ def _point_charge_lines(p: PracticeFieldPresetPointCharge) -> list[PracticeField
     lines: list[PracticeFieldLine] = []
     for k in range(n):
         th = 2.0 * math.pi * k / n
-        c, s = math.cos(th), math.sin(th)
-        if p.sign == 1:
-            xs = [p.cx + r0 * c, p.cx + r1 * c]
-            ys = [p.cy + r0 * s, p.cy + r1 * s]
-            arrow = "end"
-        else:
-            xs = [p.cx + r1 * c, p.cx + r0 * c]
-            ys = [p.cy + r1 * s, p.cy + r0 * s]
-            arrow = "end"
+        npts = 16
+        xs: list[float] = []
+        ys: list[float] = []
+        bend = 0.055 if (k % 2 == 0) else -0.055
+        for i in range(npts + 1):
+            rr = r0 + (r1 - r0) * (i / npts)
+            frac = (rr - r0) / max(r1 - r0, 1e-6)
+            tt = th + bend * frac
+            xs.append(p.cx + rr * math.cos(tt))
+            ys.append(p.cy + rr * math.sin(tt))
+        if p.sign != 1:
+            xs.reverse()
+            ys.reverse()
+        arrow = "end"
         lines.append(PracticeFieldLine(x=xs, y=ys, color=col, arrow=arrow))
     return lines
 
@@ -103,7 +108,7 @@ def _long_wire_lines(p: PracticeFieldPresetLongStraightWire) -> list[PracticeFie
     sign = 1.0 if p.current_out_of_page else -1.0
     for k in range(1, nc + 1):
         r = r1 * k / (nc + 0.5)
-        npts = max(16, int(24 * frac))
+        npts = max(28, int(36 * frac))
         th1 = sign * (-math.pi * 0.15)
         th2 = sign * (2 * math.pi * frac - math.pi * 0.15)
         if th2 < th1:

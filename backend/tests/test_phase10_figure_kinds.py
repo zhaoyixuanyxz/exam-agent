@@ -185,6 +185,25 @@ def test_electrochemical_cell_png():
     _assert_png(render_question_figure_to_png_bytes(q))
 
 
+def test_electrochemical_cell_salt_bridge_u_png():
+    spec = PracticeElectrochemicalCellSpec(
+        left_label="Zn",
+        right_label="Cu",
+        mode="galvanic",
+        salt_bridge_u=True,
+    )
+    q = PracticeQuestion(
+        order_index=1,
+        qtype="填空",
+        stem="盐桥",
+        options=[],
+        answer_outline="",
+        figure_kind="electrochemical_cell",
+        figure_spec=spec,
+    )
+    _assert_png(render_question_figure_to_png_bytes(q))
+
+
 def test_unit_circle_trig_png():
     spec = PracticeUnitCircleTrigSpec(angle_deg=60, show_sin=True, show_cos=True, show_tan=False)
     q = PracticeQuestion(

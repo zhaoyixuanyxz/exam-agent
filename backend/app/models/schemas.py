@@ -148,6 +148,7 @@ class PracticeBarSpec(BaseModel):
     caption: str = ""
     categories: list[str] = Field(min_length=1)
     values: list[float] = Field(min_length=1)
+    show_values: bool = True
 
     @model_validator(mode="after")
     def _same_len(self) -> Self:
@@ -173,6 +174,7 @@ class PracticeGroupedBarSpec(BaseModel):
     categories: list[str] = Field(min_length=1)
     series: list[PracticeGroupedBarSeries] = Field(min_length=1)
     show_legend: bool = True
+    show_values: bool = True
 
     @model_validator(mode="after")
     def _series_align(self) -> Self:
@@ -189,11 +191,15 @@ class PracticePoint2D(BaseModel):
     id: str = ""
     x: float = 0.0
     y: float = 0.0
+    style: Literal["auto", "filled", "hollow", "none"] = "auto"
 
 
 class PracticeSegment(BaseModel):
     a: str = ""
     b: str = ""
+    style: Literal["solid", "dashed", "dotted"] = "solid"
+    role: Literal["main", "auxiliary", "hidden", "ray", "extension"] = "main"
+    color: str = ""
 
 
 class PracticeGeometryLabel(BaseModel):
@@ -243,6 +249,16 @@ class PracticeGeometryArc(BaseModel):
     edge_color: str = ""
 
 
+class PracticeGeometryAngleMarker(BaseModel):
+    """角标注：顶点 b，边由 ba 与 bc 构成。"""
+
+    a: str = ""
+    b: str = ""
+    c: str = ""
+    label: str = ""
+    right_angle: bool = False
+
+
 class PracticeGeometrySpec(BaseModel):
     """平面几何草图；由 matplotlib 渲染为 PNG 嵌入 PDF。"""
 
@@ -254,17 +270,21 @@ class PracticeGeometrySpec(BaseModel):
     circles: list[PracticeGeometryCircle] = Field(default_factory=list)
     polygons: list[PracticeGeometryPolygon] = Field(default_factory=list)
     arcs: list[PracticeGeometryArc] = Field(default_factory=list)
+    angle_markers: list[PracticeGeometryAngleMarker] = Field(default_factory=list)
+    show_grid: bool = True
 
 
 class PracticeFlowchartNode(BaseModel):
     id: str = ""
     text: str = ""
     use_mathtext: bool = False
+    shape: Literal["process", "start_end", "decision", "data"] = "process"
 
 
 class PracticeFlowchartEdge(BaseModel):
     source: str = ""
     target: str = ""
+    label: str = ""
 
 
 class PracticeFlowchartSpec(BaseModel):
@@ -288,6 +308,10 @@ class PracticeForceItem(BaseModel):
     use_mathtext: bool = False
     color: str = ""
     zorder: int = 2
+    label_offset: float | None = Field(
+        default=None,
+        description="标签沿箭头法线偏移量（数据坐标）；为空时渲染层自动估算。",
+    )
 
 
 class PracticeForceDiagramSpec(BaseModel):
@@ -299,18 +323,28 @@ class PracticeForceDiagramSpec(BaseModel):
     object_dot: bool = False
     object_x: float = 0.0
     object_y: float = 0.0
+    object_style: Literal["dot", "block"] = "dot"
+    show_axes_hint: bool = False
+    normalize_force_lengths: bool = False
 
 
 PracticeCircuitElement = Literal[
     "wire",
     "resistor",
     "cell",
+    "battery",
+    "capacitor",
     "lamp",
     "switch",
+    "rheostat",
+    "fuse",
+    "diode",
     "ammeter",
     "voltmeter",
     "generic",
 ]
+
+PracticeCircuitSwitchState = Literal["default", "open", "closed"]
 
 
 class PracticeCircuitNode(BaseModel):
@@ -329,6 +363,9 @@ class PracticeCircuitEdge(BaseModel):
     target: str = ""
     element: PracticeCircuitElement = "wire"
     via: list[PracticeCircuitVia] = Field(default_factory=list)
+    switch_state: PracticeCircuitSwitchState = "default"
+    slider_position: float | None = Field(default=None, ge=0.0, le=1.0)
+    label: str = ""
 
 
 class PracticeCircuitSpec(BaseModel):
@@ -355,6 +392,7 @@ class PracticePieSpec(BaseModel):
     caption: str = ""
     labels: list[str] = Field(min_length=1)
     values: list[float] = Field(min_length=1)
+    percent_digits: int = Field(default=1, ge=0, le=2)
 
     @model_validator(mode="after")
     def _same_len(self) -> Self:
@@ -381,6 +419,12 @@ class PracticeTableSpec(BaseModel):
 class PracticeTimelineItem(BaseModel):
     label: str = ""
     t: float = 0.0
+    row: int | None = Field(
+        default=None,
+        ge=-3,
+        le=3,
+        description="可选行号（负数在轴下、正数在轴上）；为空时自动交错。",
+    )
 
 
 class PracticeTimelineSpec(BaseModel):
@@ -392,6 +436,7 @@ class PracticeTimelineSpec(BaseModel):
     t_max: float | None = None
     items: list[PracticeTimelineItem] = Field(min_length=1)
     connect: bool = True
+    show_ticks: bool = True
 
 
 class PracticeNumberLineInterval(BaseModel):
@@ -415,6 +460,9 @@ class PracticeNumberLineSpec(BaseModel):
     x_max: float = 1.0
     marks: list[PracticeNumberLineMark] = Field(default_factory=list)
     intervals: list[PracticeNumberLineInterval] = Field(default_factory=list)
+    auto_ticks: bool = True
+    tick_count: int = Field(default=8, ge=2, le=16)
+    show_axis_arrows: bool = True
 
     @model_validator(mode="after")
     def _range_order(self) -> Self:
@@ -450,6 +498,7 @@ class PracticeHistogramSpec(BaseModel):
     y_label: str = ""
     edges: list[float] = Field(min_length=2)
     counts: list[float] = Field(min_length=1)
+    show_values: bool = True
 
     @model_validator(mode="after")
     def _bins_match(self) -> Self:
@@ -470,6 +519,8 @@ class PracticeSolidVertex3D(BaseModel):
 class PracticeSolidEdge(BaseModel):
     a: str = ""
     b: str = ""
+    style: Literal["solid", "dashed", "hidden"] = "solid"
+    label: str = ""
 
 
 class PracticeSolidFace(BaseModel):
@@ -495,7 +546,7 @@ class PracticeSolidWireframeSpec(BaseModel):
 
     title: str = ""
     caption: str = ""
-    projection: Literal["isometric", "cabinet"] = "isometric"
+    projection: Literal["isometric", "cabinet", "oblique"] = "isometric"
     vertices: list[PracticeSolidVertex3D] = Field(min_length=2)
     edges: list[PracticeSolidEdge] = Field(min_length=1)
     faces: list[PracticeSolidFace] = Field(default_factory=list)
@@ -605,6 +656,8 @@ class PracticeProbabilityTreeNode(BaseModel):
     parent_id: str = ""
     edge_label: str = ""
     leaf_note: str = ""
+    order: int = 0
+    use_mathtext: bool = False
 
 
 class PracticeProbabilityTreeSpec(BaseModel):
@@ -619,7 +672,9 @@ class PracticePedigreeIndividual(BaseModel):
     sex: Literal["male", "female", "unknown"] = "unknown"
     affected: bool = False
     carrier: bool = False
+    deceased: bool = False
     x_hint: float | None = Field(default=None, ge=0.0, le=1.0)
+    note: str = ""
 
 
 class PracticePedigreeMarriage(BaseModel):
@@ -641,6 +696,8 @@ class PracticePedigreeSpec(BaseModel):
     individuals: list[PracticePedigreeIndividual] = Field(min_length=1)
     marriages: list[PracticePedigreeMarriage] = Field(default_factory=list)
     descents: list[PracticePedigreeDescent] = Field(default_factory=list)
+    proband_id: str = ""
+    show_legend: bool = False
 
 
 class PracticeEnergyProfileSpec(BaseModel):
@@ -655,6 +712,8 @@ class PracticeEnergyProfileSpec(BaseModel):
     barrier_i: int | None = Field(default=None, ge=0)
     barrier_j: int | None = Field(default=None, ge=0)
     barrier_label: str = ""
+    reactants_label: str = "反应物"
+    products_label: str = "生成物"
 
     @model_validator(mode="after")
     def _same_len(self) -> Self:
@@ -678,6 +737,12 @@ class PracticeElectrochemicalCellSpec(BaseModel):
     )
     cation_to: Literal["left", "right", "none"] = "right"
     anion_to: Literal["left", "right", "none"] = "left"
+    salt_bridge_u: bool = Field(
+        default=False,
+        description="为 True 时在两侧液面间绘制倒 U 形盐桥示意。",
+    )
+    half_reaction_left: str = ""
+    half_reaction_right: str = ""
 
 
 class PracticeUnitCircleTrigSpec(BaseModel):
@@ -700,6 +765,7 @@ class PracticeOpticsRaySegment(BaseModel):
     label: str = ""
     color: str = ""
     style: Literal["solid", "dashed"] = "solid"
+    use_mathtext: bool = False
 
 
 class PracticeOpticsPrincipalAxis(BaseModel):
@@ -746,6 +812,8 @@ class PracticeDirectedGraphNode(BaseModel):
     text: str = ""
     layer: int = Field(default=0, ge=0, le=40)
     use_mathtext: bool = False
+    x_hint: float | None = Field(default=None, ge=0.0, le=1.0)
+    y_hint: float | None = None
 
 
 class PracticeDirectedGraphEdge(BaseModel):

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const API = "";
 const URL_CID_PARAM = "c";
@@ -10,6 +10,8 @@ function openConversationInNewTab(id: string) {
 
 export type ConversationListItem = {
   id: string;
+  /** 用户自定义名称；空则列表主文案用 preview */
+  title: string | null;
   preview: string;
   last_activity_at: string | null;
   message_count: number;
@@ -45,6 +47,11 @@ function formatShortDate(iso: string | null): string {
   }
 }
 
+function primaryLabel(c: ConversationListItem): string {
+  const t = (c.title || "").trim();
+  return t || c.preview;
+}
+
 export function ConversationSidebar({
   activeId,
   refreshKey,
@@ -57,13 +64,25 @@ export function ConversationSidebar({
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const r = await fetch(`${API}/api/conversations`);
       const data = await r.json();
-      setItems((data.conversations || []) as ConversationListItem[]);
+      const raw = (data.conversations || []) as Record<string, unknown>[];
+      const normalized: ConversationListItem[] = raw.map((row) => ({
+        id: String(row.id ?? ""),
+        title: row.title != null && row.title !== "" ? String(row.title) : null,
+        preview: String(row.preview ?? "（空对话）"),
+        last_activity_at: row.last_activity_at != null ? String(row.last_activity_at) : null,
+        message_count: Number(row.message_count ?? 0),
+        paper_count: Number(row.paper_count ?? 0),
+      }));
+      setItems(normalized.filter((x) => x.id));
     } catch {
       setItems([]);
     } finally {
@@ -75,8 +94,61 @@ export function ConversationSidebar({
     void load();
   }, [load, refreshKey]);
 
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (ctxMenuRef.current?.contains(e.target as Node)) return;
+      setCtxMenu(null);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [ctxMenu]);
+
+  useEffect(() => {
+    if (!ctxMenu && !renameDialog) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setCtxMenu(null);
+        setRenameDialog(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ctxMenu, renameDialog]);
+
+  const openRename = useCallback(
+    (id: string) => {
+      const item = items.find((i) => i.id === id);
+      const custom = (item?.title || "").trim();
+      const draft = custom || (item?.preview ?? "");
+      setRenameDialog({ id, value: draft.slice(0, 512) });
+      setCtxMenu(null);
+    },
+    [items],
+  );
+
+  const saveRename = useCallback(async () => {
+    if (!renameDialog) return;
+    setBusyId(renameDialog.id);
+    try {
+      const r = await fetch(`${API}/api/conversations/${renameDialog.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: renameDialog.value }),
+      });
+      if (!r.ok) throw new Error("patch failed");
+      setRenameDialog(null);
+      await load();
+    } catch {
+      alert("重命名失败，请稍后重试。");
+    } finally {
+      setBusyId(null);
+    }
+  }, [renameDialog, load]);
+
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    setCtxMenu(null);
     if (!confirm("确定删除该对话？关联上传文件与生成产物将从服务器移除，且不可恢复。")) {
       return;
     }
@@ -92,6 +164,17 @@ export function ConversationSidebar({
       setBusyId(null);
     }
   };
+
+  const ctxPosition = useCallback((clientX: number, clientY: number) => {
+    const pad = 8;
+    const w = 160;
+    const h = 44;
+    let x = clientX;
+    let y = clientY;
+    if (x + w + pad > window.innerWidth) x = window.innerWidth - w - pad;
+    if (y + h + pad > window.innerHeight) y = window.innerHeight - h - pad;
+    return { x: Math.max(pad, x), y: Math.max(pad, y) };
+  }, []);
 
   return (
     <>
@@ -119,6 +202,7 @@ export function ConversationSidebar({
           </button>
           <p className="text-xs leading-snug text-slate-500">
             切换会话时当前生成可在后台继续（列表显示「生成中」）。↗ 可在新标签页并行打开会话。
+            <span className="mt-0.5 block">右键会话或点 ✎ 可重命名，便于分类查找。</span>
           </p>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
@@ -130,6 +214,7 @@ export function ConversationSidebar({
             {items.map((c) => {
               const active = c.id === activeId;
               const generating = generatingIds.includes(c.id);
+              const customTitle = (c.title || "").trim();
               return (
                 <li key={c.id}>
                   <div
@@ -138,16 +223,29 @@ export function ConversationSidebar({
                         ? "border-sky-300 bg-softblue/60 shadow-sm"
                         : "border-transparent bg-transparent hover:border-slate-200 hover:bg-mist/80"
                     }`}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      const { x, y } = ctxPosition(e.clientX, e.clientY);
+                      setCtxMenu({ x, y, id: c.id });
+                    }}
                   >
                     <button
                       type="button"
                       className="min-w-0 flex-1 px-3 py-2.5 text-left text-sm"
+                      title="右键可重命名"
                       onClick={() => {
                         onSelect(c.id);
                         setOpen(false);
                       }}
                     >
-                      <span className="line-clamp-2 text-slate-800">{c.preview}</span>
+                      <span className="line-clamp-2 font-medium text-slate-800">
+                        {primaryLabel(c)}
+                      </span>
+                      {customTitle && (
+                        <span className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">
+                          {c.preview}
+                        </span>
+                      )}
                       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
                         <span>{formatShortDate(c.last_activity_at)}</span>
                         {generating && (
@@ -156,6 +254,19 @@ export function ConversationSidebar({
                         {c.message_count > 0 && <span>{c.message_count} 条消息</span>}
                         {c.paper_count > 0 && <span>{c.paper_count} 份材料</span>}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 px-1 text-slate-400 opacity-75 transition hover:text-sky-600 hover:opacity-100 md:opacity-60 md:group-hover:opacity-100"
+                      title="重命名"
+                      aria-label="重命名对话"
+                      disabled={busyId === c.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openRename(c.id);
+                      }}
+                    >
+                      ✎
                     </button>
                     <button
                       type="button"
@@ -193,6 +304,73 @@ export function ConversationSidebar({
           aria-label="关闭侧边栏"
           onClick={() => setOpen(false)}
         />
+      )}
+
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          role="menu"
+          className="fixed z-[45] min-w-[140px] rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-lg"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="w-full px-3 py-2 text-left text-slate-700 hover:bg-sky-50"
+            onClick={() => openRename(ctxMenu.id)}
+          >
+            重命名…
+          </button>
+        </div>
+      )}
+
+      {renameDialog && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4"
+          onMouseDown={() => setRenameDialog(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2 className="mb-3 text-sm font-semibold text-slate-800">重命名对话</h2>
+            <p className="mb-2 text-xs text-slate-500">
+              留空并保存将恢复为默认预览（首条用户消息摘要）。
+            </p>
+            <input
+              type="text"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none ring-sky-300 focus:border-sky-300 focus:ring-2"
+              value={renameDialog.value}
+              maxLength={512}
+              autoFocus
+              placeholder="输入名称"
+              onChange={(e) =>
+                setRenameDialog({ ...renameDialog, value: e.target.value.slice(0, 512) })
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveRename();
+              }}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+                onClick={() => setRenameDialog(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+                disabled={busyId === renameDialog.id}
+                onClick={() => void saveRename()}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

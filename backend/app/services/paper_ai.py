@@ -110,14 +110,15 @@ _PRACTICE_SCHEMA = f"""
   - options: 字符串数组；单选/多选须为非空选项数组，填空/简答/判断一般为 []
   - answer_outline: string
   - figure_kind: string，仅限 "none"、"plot"、"bar"、"grouped_bar"、"pie"、"geometry"、"flowchart"、"composite"、"table"、"timeline"、"number_line"、"venn"、"histogram"、"force_diagram"、"circuit_simple"、"svg"、"solid_wireframe"、"field_lines"、"probability_tree"、"pedigree"、"energy_profile"、"electrochemical_cell"、"unit_circle_trig"、"optics_ray"、"directed_graph"；无示意图时为 "none"
+  - **配图风格（总）**：拓扑清晰、符号在枚举内的示意用结构化 figure_kind；**精细几何、复杂光路、非枚举电路符号**等优先 **figure_kind: svg**（完整 `<svg>...</svg>`，仅用 path/rect/circle/line 等常见标签，勿 script）；**circuit_simple** 仅用于节点坐标明确的教材式电路拓扑（wire/resistor/cell/battery/capacitor/lamp/switch/rheostat/fuse/diode/ammeter/voltmeter 等），勿勉强塞复杂原图。
   - figure_spec: 当 figure_kind 为 none 时不要写该字段或设为 null；否则须与种类一致：
     - plot：title, x_label, y_label, y_label_right, caption 可空；series 非空数组，每项 label、x、y（x/y 等长且**每条至少 2 个点**，数字）；每项可选 draw_as 为 "line" 或 "scatter"；可选 y_err 与 x 等长（非负，误差棒）；可选 series_right 数组（右 y 轴曲线，结构同 series，与 series_right 同时存在时勿再用 log_y）；可选 log_y(boolean)、show_legend(boolean)，默认 true；可选 fill_between 数组，每项 x、y_lower、y_upper（或 y1/y2）等长且至少 2 点，可选 alpha、color、label，用于曲线间阴影/面积示意。
       **连续函数图象**（二次函数、抛物线、反比例、指对数、幂函数、三角函数图像等）：若要用 plot，每条 series 的 x 须在合理区间内**等距取不少于 20 个点**，y 须按**题干同一关系式严格计算**；**禁止**用少于 12 个点折线冒充光滑曲线；无把握则 **figure_kind 必须为 none**。
     - bar / grouped_bar / pie：与此前一致；**数据须与题干一致，勿虚构**。
-    - geometry：点 points（id,x,y）、线段 segments（a,b 为点 id）、标签 labels（每项 text、x、y；**可选 use_mathtext**，为 true 时 text 按 matplotlib **mathtext** 子集解析，须写 $...$，JSON 内反斜杠双写如 $\\\\frac{{a}}{{b}}$；为 false 或未写时 $ 视为普通字符）；可选 circles、polygons、arcs 同前。
+    - geometry：点 points（id,x,y）、线段 segments（a,b 为点 id）、标签 labels（每项 text、x、y；**可选 use_mathtext**，为 true 时 text 按 matplotlib **mathtext** 子集解析，须写 $...$，JSON 内反斜杠双写如 $\\\\frac{{a}}{{b}}$；为 false 或未写时 $ 视为普通字符）；可选 circles、polygons、arcs 同前。**题干若写角平分线、高线、中线与边的交点等，图中须用线段画出该线且交点须在对应边上（坐标与几何关系一致），不得只画外包多边形而省略题干所述辅助线。**
     - flowchart：nodes（id,text，**可选 use_mathtext** 含义同上）、edges（source,target）；可选 layout 为 "circular"（默认）或 "layered"（自上而下，**无环** DAG，有环则勿用 layered）。
-    - force_diagram：forces 非空数组，每项 x0,y0 与 x1,y1（或 dx,dy）为数字箭头，可选 label、**use_mathtext**、color；可选 object_dot(boolean)、object_x,object_y 表受力物体中心。
-    - circuit_simple：至少 2 个 nodes（id,x,y 数字坐标）、edges（source,target 为 node id、element 为 wire/resistor/cell/lamp/switch/ammeter/voltmeter/generic，可选 via 折点数组每项 x,y）。
+    - force_diagram：forces 非空数组，每项 x0,y0 与 x1,y1（或 dx,dy）为数字箭头，可选 label、**use_mathtext**、color；可选 object_dot(boolean)、object_x/object_y 表受力中心；**object_style** 为 "dot"（默认）或 "block"（方块物体）；**show_axes_hint** 为 true 时绘浅色正交参考轴；**normalize_force_lengths** 为 true 时将各力箭头缩放到同一长度（方向不变，共点于物体中心或各箭尾均值）。
+    - circuit_simple：至少 2 个 nodes（id,x,y 数字坐标）、edges（source,target 为 node id、element 为 wire/resistor/cell/battery/**capacitor**/lamp/switch/rheostat/fuse/diode/ammeter/voltmeter/generic，可选 via 折点数组每项 x,y）；switch 可选 **switch_state** 为 "open"/"closed"；rheostat 可选 **slider_position** 为 0~1 表示滑片相对位置。
     - svg：**内联矢量**；figure_spec 须含非空 **svg** 字符串（完整 `<svg ...>...</svg>`，勿外链脚本）；title、caption 可空；仅用常见图形标签（path/rect/circle 等），勿 script/foreignObject。
     - composite：**多子图合一**；title、caption 可空；ncols 为 1～3；panels 为非空数组（**至多 6 项**），每项 kind（plot/bar/grouped_bar/pie/geometry/flowchart/table/timeline/number_line/venn/histogram/force_diagram/circuit_simple/svg/**solid_wireframe**/**field_lines**/**probability_tree**/**pedigree**/**energy_profile**/**electrochemical_cell**/**unit_circle_trig**/**optics_ray**/**directed_graph**，**勿嵌套 composite**）、subtitle 可空（如「甲」「①」）、spec 与同 kind 顶层 figure_spec 结构一致；**svg 子图在服务端栅格化**，勿过大。
     - table：title、caption 可空；rows 为非空二维字符串数组；headers 可空，若给出则列数应与每行一致。
@@ -125,12 +126,12 @@ _PRACTICE_SCHEMA = f"""
     - number_line：title、caption 可空；x_min、x_max 数字且 x_max>x_min；marks 可空（每项 x、label）；intervals 可空（每项 a、b、open_left/open_right 布尔）。
     - venn：title、caption 可空；n_sets 为 2 或 3；label_a/b/c 可空；文字区 only_a、only_b、only_c、ab、ac、bc、abc 可空（按集合数填写）。
     - histogram：title、caption、x_label、y_label 可空；edges 为升序边界数组（长度 bins+1）；counts 为非负数组且长度等于 len(edges)-1。
-    - solid_wireframe：立体线框；projection 为 "isometric" 或 "cabinet"；vertices 至少 2 项（每项 id,x,y,z）；edges 至少 1 条（a,b 为顶点 id）；可选 faces（vertex_ids 环、alpha、fill_color、edge_color）；可选 **section_faces**（截面等，语义同 faces，渲染对比更强）；可选 **auxiliary_edges**（a,b、style 为 solid/dashed、可选 label）；labels 可空（text,x,y，可选 use_mathtext）。
+    - solid_wireframe：立体线框；projection 为 "isometric"、"cabinet" 或 **"oblique"**（斜二测，教材常用）；vertices 至少 2 项（每项 id,x,y,z）；edges 至少 1 条（a,b 为顶点 id）；可选 faces（vertex_ids 环、alpha、fill_color、edge_color）；可选 **section_faces**（截面等，语义同 faces，渲染对比更强）；可选 **auxiliary_edges**（a,b、style 为 solid/dashed、可选 label）；labels 可空（text,x,y，可选 use_mathtext）。
     - field_lines：须至少具备下列之一——**lines**（每项 x、y 等长且至少 2 点，可选 color、arrow）、**presets**（物理示意数组，每项 kind 为 "point_charge"（cx,cy,sign±1,n_lines,r_max,r_min 可选）、"solenoid"（x0,y0,w,h,b_direction 为 up/down/left/right,nx,ny,draw_frame）、"long_straight_wire"（cx,cy,n_circles,r_max,current_out_of_page,arc_fraction））、或 **uniform_field**（dx,dy,label）；lines 与 presets 可同图叠加。
     - probability_tree：nodes 非空；每项 id、text；**恰一个根**：parent_id 为空或指向不存在 id；非根须 parent_id 指向已有 id；edge_label 为枝上条件概率文案；leaf_note 可空（叶下说明）。
-    - pedigree：individuals 非空（id、generation、sex 为 male/female/unknown、affected、carrier、可选 x_hint 0～1）；marriages 可空（left,right）；descents 可空（mother,father,child）。
+    - pedigree：individuals 非空（id、generation、sex 为 male/female/unknown、affected、carrier、**deceased**、可选 x_hint 0～1）；marriages 可空（left,right）；descents 可空（mother,father,child）；可选 **proband_id**（先证者 id，须存在于 individuals）；**show_legend** 为 true 时在图内角标符号说明（默认 false，系谱简单时可省略）。
     - energy_profile：x、y 等长至少 2 点；可选 barrier_i、barrier_j 为状态点下标与 barrier_label 表活化能双箭头。
-    - electrochemical_cell：left_label、right_label、electrolyte_label 可空；mode 为 "galvanic" 或 "electrolytic"；electron_cw 表外电路电子沿上导线方向；cation_to/anion_to 为 "left"/"right"/"none"。
+    - electrochemical_cell：left_label、right_label、electrolyte_label 可空；mode 为 "galvanic" 或 "electrolytic"；electron_cw 表外电路电子沿上导线方向；cation_to/anion_to 为 "left"/"right"/"none"；**salt_bridge_u** 为 true 时绘制倒 U 形盐桥连接两侧液面。
     - unit_circle_trig：angle_deg；show_sin/show_cos/show_tan 布尔；angle_label 可空。
     - optics_ray：rays 非空（x0,y0,x1,y1、可选 label、color、style solid/dashed）；**interface_orientation** 为 "horizontal"（默认，**interface_y** 为水平界面）、"vertical"（**interface_x** 竖直界面）或 "angled"（**interface_pivot_x/y**、**interface_angle_deg** 定义倾斜界面）；medium_top_label/medium_bottom_label 可空（水平时表上下介质，竖直时可表左右侧说明）；show_normal 布尔；可选 **principal_axis**（x0,y0,x1,y1 点划线主光轴）；可选 **thin_lens**（center_x,center_y,diameter,convex_toward_right）。
     - directed_graph：有向图（食物链/物质流等）；**nodes** 非空（id,text，**layer** 0～40 用于分层，可选 use_mathtext）；**edges** 可空（source,target，可选 label）；**layout** 为 "layered"（按 layer 分行）或 "circular"。
@@ -155,7 +156,7 @@ def _subject_figure_hints(subject: str) -> str:
         )
     if any(x in s for x in ("化学", "化")):
         hints.append(
-            "化学：energy_profile（能垒/历程）、electrochemical_cell（原电池/电解池示意）、table、flowchart、plot、composite；装置复杂图优先原卷或 svg。"
+            "化学：energy_profile（能垒/历程）、electrochemical_cell（原电池/电解池，可选 salt_bridge_u 盐桥）、solid_wireframe（晶体/装置透视）、table、flowchart、plot、composite；装置复杂图优先原卷或 svg。"
         )
     if any(x in s for x in ("生物", "生")):
         hints.append("生物：pedigree（系谱）、directed_graph（食物链 layered）、venn、flowchart、table、bar、composite。")
@@ -213,7 +214,9 @@ def generate_practice_set(
                 ""
                 if not include_figures
                 else (
-                    "配图：仅当题干**明确写出或表格中给出**可作图数据时才配图；无把握一律 figure_kind 为 none，不要强行配图。"
+                    "配图：若题干含「如图」「如图所示」「如下图」「右图」等，**必须**给出 figure_kind 为 geometry、svg 或 composite 的配图，"
+                    "且图中须完整呈现题干所述点、线（含角平分线、高、中线等）、交点及字母标注；**禁止**仅有外框而缺题干提到的线。"
+                    "无「如图」类字样时：仅当题干**明确写出或表格中给出**可作图数据时才配图；数据不足且无把握时 figure_kind 可为 none，不要强行配图。"
                     "图中数字、类别、点列必须与 stem 中可读信息一致，禁止为凑图虚构数据。"
                     "先判断图种：统计/类别→柱、饼或 histogram；离散折线→plot；材料表→table；进程时间→timeline；集合关系→venn；区间数轴→number_line；"
                     "多幅并列或甲乙图→composite（panels 每项 kind+spec）；几何点线圆弧多边形→geometry；算法/过程→flowchart（可用 layout layered）；受力分析→force_diagram；简易电路→circuit_simple。"
@@ -332,7 +335,7 @@ def generate_practice_set(
     if ps is None:
         raise ValueError(str(last_err) if last_err else "练习 JSON 解析失败") from last_err
     qs = list(ps.questions)[:n]
-    # 重试时会降为 n-2、n-4 题，或模型 JSON 截断导致题数不足；先整批补缺，再逐题补缺，尽量避免静默占位。
+    # 重试时会降为 n-2、n-4 题，或模型 JSON 截断导致题数不足；先整批补缺再逐题补缺；最终可少于 n 题，不插入占位题。
     if len(qs) < n:
         need = n - len(qs)
         start_idx = len(qs) + 1
@@ -346,33 +349,28 @@ def generate_practice_set(
                 qs.append(eq)
         except ValueError:
             pass
-    # 仍缺则按单题多次请求（小输出不易截断）
+    # 仍缺则按单题多次请求（小输出不易截断）；不设上限时用较高重试次数直至题数凑满或接口持续失败
+    _max_single_fills = max(40, (n - len(qs)) * 8)
     fill_attempts = 0
-    while len(qs) < n and fill_attempts < 15:
+    while len(qs) < n and fill_attempts < _max_single_fills:
         fill_attempts += 1
         idx = len(qs) + 1
         try:
             hint_1 = (
                 f"仅生成第 {idx} 题一道题：JSON 里 questions 长度必须为 1，"
                 f"order_index={idx}，与同一考点、难度与卷内已有题相当，避免重复题干。"
+                "题干若含「如图」须带完整配图（含题干所述全部辅助线与交点）。"
             )
             one = _one_batch(1, 0, order_hint=hint_1)
             if one.questions:
                 qs.append(one.questions[0])
-            else:
-                break
         except ValueError:
-            break
-    while len(qs) < n:
-        qs.append(
-            PracticeQuestion(
-                order_index=len(qs) + 1,
-                qtype="填空",
-                stem="请根据上述考点完成下列填空（占位题，可替换）。",
-                options=[],
-                answer_outline="根据定义与定理逐步推导即可。",
-            )
-        )
+            continue
+    if not qs:
+        raise ValueError(
+            str(last_err) if last_err else "练习 JSON 解析后题目为空，请重试。"
+        ) from last_err
+    # 能出几题出几题：不凑满 n 也可导出 PDF，禁止用占位题充数
     ps.questions = qs[:n]
     for i, q in enumerate(ps.questions, start=1):
         q.order_index = i

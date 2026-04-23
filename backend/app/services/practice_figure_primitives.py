@@ -20,6 +20,14 @@ def project_vertex_cabinet(x: float, y: float, z: float) -> tuple[float, float]:
     return x2, y2
 
 
+def project_vertex_oblique_pep(x: float, y: float, z: float) -> tuple[float, float]:
+    """人教版立体几何常用斜二测：x、z 方向 1:1，深度 y 与 x 轴成 45° 且长度取半。"""
+    c = math.sqrt(2) / 2.0
+    x2 = x + 0.5 * y * c
+    y2 = z + 0.5 * y * c
+    return x2, y2
+
+
 def polygon_centroid_2d(xs: list[float], ys: list[float]) -> tuple[float, float]:
     n = len(xs)
     if n == 0:

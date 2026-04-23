@@ -44,35 +44,31 @@ def circuit_node_label_for_display(nid: str) -> str:
     if m:
         return f"节点{m.group(1)}"
 
-    def _pos_zh(pos: str) -> str:
+    def _pos_one_char(pos: str) -> str:
         return "下" if pos in ("bot", "bottom") else "上"
 
-    # R1_bot、R2_top
+    # R1_bot、R2_top — 短标签，减少并排遮挡
     m = re.match(r"^r(\d+)_(bot|bottom|top)$", key)
     if m:
-        return f"电阻{m.group(1)}（{_pos_zh(m.group(2))}）"
+        return f"R{m.group(1)}{_pos_one_char(m.group(2))}"
 
-    # V1_bot（电压表支路节点）
     m = re.match(r"^v(\d+)_(bot|bottom|top)$", key)
     if m:
-        return f"电压{m.group(1)}（{_pos_zh(m.group(2))}）"
+        return f"V{m.group(1)}{_pos_one_char(m.group(2))}"
 
-    # A1_bottom、A2_top
     m = re.match(r"^a(\d+)_(bot|bottom|top)$", key)
     if m:
-        return f"电流表{m.group(1)}（{_pos_zh(m.group(2))}）"
-    # A_top、A_bottom
+        return f"A{m.group(1)}{_pos_one_char(m.group(2))}"
     m = re.match(r"^a_(bot|bottom|top)$", key)
     if m:
-        return f"电流表（{_pos_zh(m.group(1))}）"
+        return f"A{_pos_one_char(m.group(1))}"
 
-    # 单独 R3、V2
     m = re.match(r"^r(\d+)$", key)
     if m:
-        return f"电阻{m.group(1)}"
+        return f"R{m.group(1)}"
     m = re.match(r"^v(\d+)$", key)
     if m:
-        return f"电压{m.group(1)}"
+        return f"V{m.group(1)}"
 
     # 含 cell_minus 等子串的复合 id
     t = s
