@@ -46,7 +46,14 @@ class ExamPaper(Base):
     raw_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     source_type: Mapped[str] = mapped_column(String(32))
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 用户可见名称；缺省时前端可用 id 前 8 位 + 来源类型展示
+    display_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # none: 未产出结构化 | pending: 已拆题未确认 | confirmed: 已确认
+    structured_confirm_status: Mapped[str] = mapped_column(String(32), default="none")
+    structured_version: Mapped[int] = mapped_column(default=0)
+    structured_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    structured_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     alignment_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     knowledge_analysis_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     knowledge_markdown_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)

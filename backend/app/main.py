@@ -9,15 +9,12 @@ from app.api.chat import router as chat_router
 from app.api.exam_papers import router as exam_papers_router
 from app.config import settings
 from app.db.init_db import init_db
-from app.db.models import Base
-from app.db.session import engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # create_all + SQLite 轻量列迁移
     await init_db()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.export_dir.mkdir(parents=True, exist_ok=True)
     settings.upload_dir.mkdir(parents=True, exist_ok=True)

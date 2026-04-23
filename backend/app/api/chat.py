@@ -7,20 +7,23 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.agent.graph import delete_agent_thread, get_agent_graph
 from app.agent.tools import AGENT_TOOLS
 from app.config import settings
 from app.db.models import Conversation, ExamPaper, Message
+from app.models.schemas import StructuredPaper
 from app.db.session import SessionLocal, get_session
 from app.db.sync_session import sync_session
 from app.services.agent_thread_repair import repair_dangling_tool_calls
@@ -33,6 +36,12 @@ from app.services.llm_errors import user_message_for_llm_error
 from app.services.parsers.pipeline import parse_input
 from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
 from app.services.storage import new_stored_path
+from app.services.structured_inspect import build_summary_from_parsed, list_anomalies
+from app.services.workflow_state import (
+    build_workflow_payload,
+    effective_structured_status,
+    infer_failed_step_key_from_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,11 +168,14 @@ async def chat_stream(
     source_type: str = Form("text"),
     url: str | None = Form(None),
     file: UploadFile | None = File(None),
+    target_paper_id: str | None = Form(None),
 ):
     conv = await session.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(404, "conversation not found")
 
+    new_paper_from_upload = False
+    new_paper_from_paste = False
     paper_id: str | None = None
     extra_note = ""
 
@@ -181,6 +193,9 @@ async def chat_stream(
         except Exception as e:
             raise HTTPException(400, f"解析失败: {e!s}") from e
         pid = str(uuid.uuid4())
+        dname = Path(file.filename or "file").stem or "上传文件"
+        if len(dname) > 500:
+            dname = dname[:500]
         session.add(
             ExamPaper(
                 id=pid,
@@ -188,10 +203,12 @@ async def chat_stream(
                 raw_path=dest.as_posix(),
                 source_type=st,
                 raw_text=text,
+                display_name=dname,
             )
         )
         await session.commit()
         paper_id = pid
+        new_paper_from_upload = True
         preview = (text[:1200] + "…") if len(text) > 1200 else text
         extra_note = f"\n\n【用户上传了试卷文件，paper_id={paper_id}】\n正文预览：\n{preview}"
     elif url and url.strip() and source_type.lower() == "url":
@@ -206,10 +223,12 @@ async def chat_stream(
                 conversation_id=conversation_id,
                 source_type="url",
                 raw_text=text,
+                display_name="网页材料",
             )
         )
         await session.commit()
         paper_id = pid
+        new_paper_from_upload = True
         extra_note = f"\n\n【来自 URL，paper_id={paper_id}】\n内容预览：\n{text[:1200]}"
     elif message.strip():
         existing = await _latest_paper_id(session, conversation_id)
@@ -221,16 +240,30 @@ async def chat_stream(
                     conversation_id=conversation_id,
                     source_type="text",
                     raw_text=message.strip(),
+                    display_name="粘贴材料",
                 )
             )
             await session.commit()
             paper_id = pid
+            new_paper_from_paste = True
             extra_note = f"\n\n【粘贴内容已保存为试卷，paper_id={paper_id}】"
         else:
             paper_id = existing
 
     if paper_id is None:
         paper_id = await _latest_paper_id(session, conversation_id)
+
+    if (
+        not new_paper_from_upload
+        and not new_paper_from_paste
+        and target_paper_id
+        and str(target_paper_id).strip()
+    ):
+        tid = str(target_paper_id).strip()
+        tp = await session.get(ExamPaper, tid)
+        if not tp or tp.conversation_id != conversation_id:
+            raise HTTPException(400, "目标材料无效或不属于当前会话。")
+        paper_id = tid
 
     if not paper_id and not message.strip() and not file and not (url and url.strip()):
         raise HTTPException(400, "请发送消息、粘贴文本、上传文件或提供 URL")
@@ -243,8 +276,8 @@ async def chat_stream(
     base_msg = (message.strip() or "请根据我提供的材料开始分析试卷。") + extra_note
     ctx = (
         f"【系统上下文】conversation_id={conversation_id}；paper_id={paper_id}；本会话累计试卷材料份数={paper_count}。"
-        "此 paper_id 为本轮默认绑定材料（一般为最近上传或粘贴的一份）。"
-        "若份数大于 1 且用户未明确针对哪一份，须用简短中文请用户说明目标材料（可提示 paper_id 前 8 位），禁止猜测。"
+        "此 paper_id 为本轮默认绑定材料（用户可在界面选择目标材料；多份材料时须严格使用该 paper_id）。"
+        "若份数大于 1 且用户未在界面选择目标、也未说明材料，须用简短中文请用户选择或说明（可提示 paper_id 前 8 位），禁止猜测。"
         "工具调用的 paper_id 必须与上述 paper_id 一致。\n\n"
     )
     user_content = ctx + base_msg
@@ -450,10 +483,171 @@ async def list_conversation_papers(
                 "id": p.id,
                 "source_type": p.source_type,
                 "raw_path": p.raw_path,
+                "display_name": p.display_name,
+                "structured_confirm_status": effective_structured_status(p),
             }
             for p in papers
         ]
     }
+
+
+class PaperDisplayNamePatch(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=512)
+
+
+@router.patch("/conversations/{conversation_id}/papers/{paper_id}")
+async def patch_paper_display_name(
+    conversation_id: str,
+    paper_id: str,
+    body: PaperDisplayNamePatch,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    p.display_name = body.display_name.strip()
+    await session.commit()
+    return {"ok": True, "display_name": p.display_name, "id": p.id}
+
+
+class StructuredPaperPatchBody(BaseModel):
+    parsed_json: dict[str, Any]
+
+
+@router.get("/conversations/{conversation_id}/papers/{paper_id}/structured")
+async def get_paper_structured(
+    conversation_id: str,
+    paper_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    st = effective_structured_status(p)
+    summary = build_summary_from_parsed(p.parsed_json) if p.parsed_json else None
+    return {
+        "paper_id": p.id,
+        "display_name": p.display_name,
+        "structured_confirm_status": st,
+        "structured_version": int(p.structured_version or 0),
+        "structured_confirmed_at": p.structured_confirmed_at.isoformat()
+        if p.structured_confirmed_at
+        else None,
+        "structured_updated_at": p.structured_updated_at.isoformat()
+        if p.structured_updated_at
+        else None,
+        "parsed_json": p.parsed_json,
+        "summary": summary,
+        "anomalies": list_anomalies(p.parsed_json),
+        "alignment_json": p.alignment_json,
+    }
+
+
+@router.patch("/conversations/{conversation_id}/papers/{paper_id}/structured")
+async def patch_paper_structured(
+    conversation_id: str,
+    paper_id: str,
+    body: StructuredPaperPatchBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    try:
+        sp = StructuredPaper.model_validate(body.parsed_json)
+    except Exception as e:
+        raise HTTPException(400, f"结构化数据格式不正确：{e!s}") from e
+    p.parsed_json = sp.model_dump()
+    p.structured_version = int(p.structured_version or 0) + 1
+    p.structured_updated_at = datetime.utcnow()
+    p.structured_confirm_status = "pending"
+    p.structured_confirmed_at = None
+    await session.commit()
+    return {
+        "ok": True,
+        "structured_version": p.structured_version,
+        "structured_confirm_status": effective_structured_status(p),
+    }
+
+
+@router.post("/conversations/{conversation_id}/papers/{paper_id}/structured/confirm")
+async def post_confirm_structured(
+    conversation_id: str,
+    paper_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    if not p.parsed_json:
+        raise HTTPException(400, "暂无可确认的结构化结果，请先完成拆题。")
+    try:
+        StructuredPaper.model_validate(p.parsed_json)
+    except Exception as e:
+        raise HTTPException(400, f"当前结构化数据仍无法通过校验，无法确认：{e!s}") from e
+    if list_anomalies(p.parsed_json):
+        # 允许带警告仍确认，由产品决定；此处仅阻止「无法解析」类已在 validate 处理
+        pass
+    p.structured_confirm_status = "confirmed"
+    p.structured_confirmed_at = datetime.utcnow()
+    p.structured_version = int(p.structured_version or 0)  # 确认不强制升版本
+    await session.commit()
+    return {
+        "ok": True,
+        "structured_confirm_status": effective_structured_status(p),
+        "structured_confirmed_at": p.structured_confirmed_at.isoformat() if p.structured_confirmed_at else None,
+    }
+
+
+@router.get("/conversations/{conversation_id}/workflow")
+async def get_conversation_workflow(
+    conversation_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    paper_id: str = Query(..., min_length=1),
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    r = await session.execute(
+        select(ExamPaper)
+        .where(ExamPaper.id == paper_id, ExamPaper.conversation_id == conversation_id)
+        .options(selectinload(ExamPaper.artifacts))
+    )
+    p = r.scalar_one_or_none()
+    if not p:
+        raise HTTPException(404, "paper not found")
+    ar = conversation_agent_run_active(conversation_id)
+    last_failed: str | None = None
+    if not ar:
+        rmsg = await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        m = rmsg.scalars().first()
+        if m and m.content:
+            c = str(m.content)
+            if "（处理出错" in c or c.strip().startswith("（处理出错"):
+                last_failed = infer_failed_step_key_from_error_text(c)
+    return build_workflow_payload(
+        p,
+        agent_run_active=ar,
+        conversation_id=conversation_id,
+        last_failed_step=last_failed,
+    )
 
 
 @router.get("/conversations/{conversation_id}/artifacts")

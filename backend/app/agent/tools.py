@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
@@ -184,10 +185,13 @@ def structure_exam_paper(paper_id: str) -> str:
                 return friendly
             return tool_error_user_text("拆题失败：", e)
         p.parsed_json = sp.model_dump()
+        p.structured_confirm_status = "pending"
+        p.structured_version = int(p.structured_version or 0) + 1
+        p.structured_updated_at = datetime.utcnow()
         session.add(p)
         session.commit()
         n = sum(len(sec.questions) for sec in sp.sections)
-        return f"成功：{len(sp.sections)} 个部分，{n} 道题。"
+        return f"成功：{len(sp.sections)} 个部分，{n} 道题。请在界面「结构化结果」中确认后再继续对齐与考点分析。"
 
 
 @tool
@@ -203,6 +207,9 @@ def save_alignment_metadata(
         p = _get_paper(session, paper_id)
         if not p:
             return "错误：找不到试卷。"
+        st = (p.structured_confirm_status or "none").strip() or "none"
+        if st != "confirmed":
+            return "请先在「结构化结果」中确认拆题结果，再保存年级、科目与题型数量。"
         try:
             counts = json.loads(type_counts_json)
         except json.JSONDecodeError:
@@ -225,6 +232,9 @@ def run_knowledge_analysis(paper_id: str) -> str:
         p = _get_paper(session, paper_id)
         if not p or not p.parsed_json:
             return "请先 structure_exam_paper。"
+        st = (p.structured_confirm_status or "none").strip() or "none"
+        if st != "confirmed":
+            return "请先在「结构化结果」中确认拆题结果，再运行考点分析。"
         if not p.alignment_json:
             return "请先 save_alignment_metadata。"
         sp = StructuredPaper.model_validate(p.parsed_json)

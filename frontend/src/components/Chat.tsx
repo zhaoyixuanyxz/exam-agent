@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useStreamJobs, type StreamArtifact } from "../context/StreamJobsContext";
 import { displayUserMessageContent, textForChatDisplay } from "../utils/chatDisplay";
+import { MaterialSelector, type PaperListItem } from "./MaterialSelector";
+import { StructuredResultPanel } from "./StructuredResultPanel";
+import { WorkflowStepper } from "./WorkflowStepper";
 
 type Bubble = { role: "user" | "assistant"; text: string };
 
@@ -41,9 +44,10 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const [file, setFile] = useState<File | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [artifacts, setArtifacts] = useState<StreamArtifact[]>([]);
-  const [papers, setPapers] = useState<
-    { id: string; source_type: string; raw_path: string | null }[]
-  >([]);
+  const [papers, setPapers] = useState<PaperListItem[]>([]);
+  const [targetPaperId, setTargetPaperId] = useState<string | null>(null);
+  const [v2Tick, setV2Tick] = useState(0);
+  const [clientStreamErrorHint, setClientStreamErrorHint] = useState<string | null>(null);
   const [splitRanges, setSplitRanges] = useState("");
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
@@ -74,16 +78,40 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     void loadPapers();
   }, [conversationId, streamRefreshNonce, loadPapers]);
 
+  useEffect(() => {
+    setTargetPaperId(null);
+    setV2Tick(0);
+    setClientStreamErrorHint(null);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (papers.length === 0) return;
+    setTargetPaperId((cur) => {
+      if (cur && papers.some((p) => p.id === cur)) return cur;
+      return papers[0].id;
+    });
+  }, [papers]);
+
+  useEffect(() => {
+    if (job.streamPaperId) {
+      setTargetPaperId(job.streamPaperId);
+    }
+  }, [job.streamPaperId]);
+
   const splitTarget = useMemo(() => {
     const pdf = papers.filter((x) => x.source_type === "pdf" && x.raw_path);
     if (!pdf.length) return null;
+    if (targetPaperId) {
+      const byTarget = pdf.find((x) => x.id === targetPaperId);
+      if (byTarget) return byTarget;
+    }
     const sid = job.streamPaperId;
     if (sid) {
       const hit = pdf.find((x) => x.id === sid);
       if (hit) return hit;
     }
     return pdf[0] ?? null;
-  }, [papers, job.streamPaperId]);
+  }, [papers, job.streamPaperId, targetPaperId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -92,6 +120,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   useEffect(() => {
     const err = job.streamError;
     if (!err) return;
+    setClientStreamErrorHint(err);
     setBubbles((b) => [...b, { role: "assistant", text: err }]);
     clearStreamError(conversationId);
   }, [job.streamError, conversationId, clearStreamError]);
@@ -196,8 +225,83 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     };
   }, [conversationId, loadThread, onConversationActivity]);
 
+  const handleRestructure = useCallback(() => {
+    if (busy || !targetPaperId) return;
+    setClientStreamErrorHint(null);
+    const fd = new FormData();
+    fd.append("conversation_id", conversationId);
+    fd.append("message", "请仅对当前目标试卷调用 structure_exam_paper 工具完成拆题，不要跳过。");
+    fd.append("source_type", "text");
+    fd.append("target_paper_id", targetPaperId);
+    setBubbles((b) => [...b, { role: "user", text: "（重新结构化：请运行拆题）" }]);
+    startStream(conversationId, fd, {
+      onComplete: () => {
+        onConversationActivity?.();
+        void loadPapers();
+        setV2Tick((t) => t + 1);
+        setClientStreamErrorHint(null);
+      },
+    });
+  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+
+  const handleRetryAnalyze = useCallback(() => {
+    if (busy || !targetPaperId) return;
+    setClientStreamErrorHint(null);
+    const fd = new FormData();
+    fd.append("conversation_id", conversationId);
+    fd.append(
+      "message",
+      "请对当前目标材料：若尚未完成 save_alignment_metadata，请先向用户确认并保存年级、科目与题型数量；在结构化结果已确认的前提下，调用 run_knowledge_analysis 完成考点分析。",
+    );
+    fd.append("source_type", "text");
+    fd.append("target_paper_id", targetPaperId);
+    setBubbles((b) => [...b, { role: "user", text: "（主流程重试：考点分析）" }]);
+    startStream(conversationId, fd, {
+      onComplete: () => {
+        onConversationActivity?.();
+        void loadPapers();
+        setV2Tick((t) => t + 1);
+        setClientStreamErrorHint(null);
+      },
+    });
+  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+
+  const handleRetryGenerate = useCallback(() => {
+    if (busy || !targetPaperId) return;
+    setClientStreamErrorHint(null);
+    const fd = new FormData();
+    fd.append("conversation_id", conversationId);
+    fd.append(
+      "message",
+      "请基于当前已完成的考点分析，为主要考点调用 generate_chunk_practice_pdfs_batch 或 generate_chunk_practice_pdf 生成分块练习 PDF 与答案（按考点批量、避免遗漏）。",
+    );
+    fd.append("source_type", "text");
+    fd.append("target_paper_id", targetPaperId);
+    setBubbles((b) => [...b, { role: "user", text: "（主流程重试：生成练习）" }]);
+    startStream(conversationId, fd, {
+      onComplete: () => {
+        onConversationActivity?.();
+        void loadPapers();
+        setV2Tick((t) => t + 1);
+        setClientStreamErrorHint(null);
+      },
+    });
+  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+
+  const handleRetryDownload = useCallback(() => {
+    setClientStreamErrorHint(null);
+    void loadThread(conversationId);
+    setV2Tick((t) => t + 1);
+  }, [conversationId, loadThread]);
+
+  const handleRetryUpload = useCallback(() => {
+    setClientStreamErrorHint(null);
+    fileInputRef.current?.click();
+  }, []);
+
   const send = useCallback(async () => {
     if (busy) return;
+    setClientStreamErrorHint(null);
     const requestCid = conversationId;
     const fd = new FormData();
     fd.append("conversation_id", requestCid);
@@ -205,6 +309,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     fd.append("source_type", sourceType);
     if (url.trim()) fd.append("url", url.trim());
     if (file) fd.append("file", file);
+    if (targetPaperId) fd.append("target_paper_id", targetPaperId);
 
     const userLine =
       input.trim() ||
@@ -217,9 +322,11 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
       onComplete: () => {
         onConversationActivity?.();
         void loadPapers();
+        setV2Tick((t) => t + 1);
+        setClientStreamErrorHint(null);
       },
     });
-  }, [busy, conversationId, file, input, loadPapers, onConversationActivity, sourceType, startStream, url]);
+  }, [busy, conversationId, file, input, loadPapers, onConversationActivity, sourceType, startStream, targetPaperId, url]);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 md:pl-2">
@@ -234,10 +341,43 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
           </span>
         </div>
         <p className="text-sm text-slate-500">
-          上传 PDF / Word、粘贴 URL 或正文，助手会帮你对齐年级科目、拆解考点并生成分块练习 PDF（楷体 · 米白底 ·
-          带水印）。切换左侧其他会话时，当前生成可在后台继续；列表中带「生成中」标记。
+          上传 PDF / Word、粘贴 URL 或正文；请在下方选择目标材料、确认结构化结果后再继续对齐与考点分析。切换左侧其他会话时，当前生成可在后台继续；列表中带「生成中」标记。
         </p>
       </header>
+
+      <div className="mb-3 flex flex-col gap-3">
+        <WorkflowStepper
+          conversationId={conversationId}
+          paperId={targetPaperId}
+          refreshKey={v2Tick}
+          busy={busy}
+          clientErrorHint={clientStreamErrorHint}
+          onClearClientErrorHint={() => setClientStreamErrorHint(null)}
+          onRetryUpload={handleRetryUpload}
+          onRetryStructure={handleRestructure}
+          onRetryAnalyze={handleRetryAnalyze}
+          onRetryGenerate={handleRetryGenerate}
+          onRetryDownload={handleRetryDownload}
+        />
+        <MaterialSelector
+          conversationId={conversationId}
+          papers={papers}
+          targetPaperId={targetPaperId}
+          onTargetChange={setTargetPaperId}
+          onPapersChanged={() => {
+            void loadPapers();
+            setV2Tick((t) => t + 1);
+          }}
+        />
+        <StructuredResultPanel
+          conversationId={conversationId}
+          paperId={targetPaperId}
+          refreshKey={v2Tick}
+          onAfterSave={() => setV2Tick((t) => t + 1)}
+          onRestructure={handleRestructure}
+          busy={busy}
+        />
+      </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-2xl border border-slate-200/80 bg-paper/90 p-4 shadow-inner">
         {bubbles.length === 0 && !streaming && !statusHint && (

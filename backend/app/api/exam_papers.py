@@ -62,6 +62,7 @@ async def split_exam_paper_by_pages(
                 raw_path=p.raw_path,
                 source_type="pdf",
                 raw_text=text,
+                display_name=f"片段{idx + 1}",
             )
         )
         new_papers.append(
