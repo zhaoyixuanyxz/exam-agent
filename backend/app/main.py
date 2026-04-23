@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.graph import setup_checkpoint, shutdown_checkpoint
 from app.api.chat import router as chat_router
 from app.api.exam_papers import router as exam_papers_router
+from app.api.multi_paper import router as multi_paper_router
 from app.config import settings
 from app.db.init_db import init_db
 
@@ -38,6 +39,7 @@ app.add_middleware(
 
 app.include_router(chat_router)
 app.include_router(exam_papers_router)
+app.include_router(multi_paper_router)
 app.mount(
     "/export-files",
     StaticFiles(directory=settings.export_dir.as_posix()),

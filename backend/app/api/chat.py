@@ -35,6 +35,7 @@ from app.services.conversation_delete import (
 from app.services.llm_errors import user_message_for_llm_error
 from app.services.parsers.pipeline import parse_input
 from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
+from app.services.question_assets import rebuild_question_assets_for_paper_id
 from app.services.storage import new_stored_path
 from app.services.structured_inspect import build_summary_from_parsed, list_anomalies
 from app.services.workflow_state import (
@@ -742,11 +743,38 @@ async def post_confirm_structured(
     p.structured_confirmed_at = datetime.utcnow()
     p.structured_version = int(p.structured_version or 0)  # 确认不强制升版本
     await session.commit()
+    n_assets = rebuild_question_assets_for_paper_id(paper_id)
     return {
         "ok": True,
         "structured_confirm_status": effective_structured_status(p),
         "structured_confirmed_at": p.structured_confirmed_at.isoformat() if p.structured_confirmed_at else None,
+        "question_assets_synced": n_assets,
     }
+
+
+@router.post("/conversations/{conversation_id}/papers/{paper_id}/question-assets/rebuild")
+async def post_rebuild_question_assets(
+    conversation_id: str,
+    paper_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """历史数据回填：对已确认结构化的试卷重建题目资产行。"""
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    if (p.structured_confirm_status or "") != "confirmed":
+        raise HTTPException(400, "仅对已确认结构化的材料重建题目资产")
+    if not p.parsed_json:
+        raise HTTPException(400, "无结构化数据")
+    try:
+        StructuredPaper.model_validate(p.parsed_json)
+    except Exception as e:
+        raise HTTPException(400, f"结构化数据无效：{e!s}") from e
+    n = rebuild_question_assets_for_paper_id(paper_id)
+    return {"ok": True, "count": n}
 
 
 @router.get("/conversations/{conversation_id}/workflow")

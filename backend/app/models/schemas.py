@@ -1109,3 +1109,96 @@ class PracticeSet(BaseModel):
 class ChatStreamEvent(BaseModel):
     event: Literal["token", "tool", "artifact", "error", "done"]
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+# --- V2.2 题目资产与多卷聚合分析（预研包） ---
+
+
+class QuestionAssetDTO(BaseModel):
+    """题目资产 API / 分析用 DTO。"""
+
+    id: str
+    paper_id: str
+    conversation_id: str
+    structured_version: int
+    question_order: int
+    section_title: str = ""
+    qtype: str = ""
+    stem: str = ""
+    options: list[str] = Field(default_factory=list)
+    knowledge_point_keys: list[str] = Field(default_factory=list)
+    alignment_snapshot: dict[str, Any] | None = None
+
+
+class MultiPaperAnalysisRequest(BaseModel):
+    paper_ids: list[str] = Field(..., min_length=2, description="至少两份材料 id")
+    subject: str | None = Field(default=None, description="可选：仅纳入 alignment 中学科匹配的材料")
+    grade_contains: str | None = Field(
+        default=None,
+        description="可选：年级字符串子串匹配（如 初二），对 grade_min/grade_max 做包含判断",
+    )
+
+
+class PaperSummaryInAnalysis(BaseModel):
+    paper_id: str
+    display_name: str | None = None
+    structured_title: str = ""
+    structured_version: int = 0
+    question_count: int = 0
+    knowledge_point_count: int = 0
+
+
+class KnowledgeCoveragePaperSlice(BaseModel):
+    paper_id: str
+    display_name: str | None = None
+    knowledge_point_keys: list[str] = Field(default_factory=list)
+    unique_vs_others: list[str] = Field(
+        default_factory=list,
+        description="仅出现在本卷、未出现在其它所选卷中的考点 key",
+    )
+
+
+class KnowledgeCoverageDiff(BaseModel):
+    """考点覆盖：各卷集合与共有考点。"""
+
+    per_paper: list[KnowledgeCoveragePaperSlice] = Field(default_factory=list)
+    common_across_selected: list[str] = Field(default_factory=list)
+
+
+class QuestionTypeCount(BaseModel):
+    qtype: str
+    count: int
+
+
+class QuestionTypeDistributionSlice(BaseModel):
+    paper_id: str
+    display_name: str | None = None
+    counts: list[QuestionTypeCount] = Field(default_factory=list)
+
+
+class RepeatedKnowledgePoint(BaseModel):
+    knowledge_point_key: str
+    name: str = ""
+    paper_count: int = Field(description="所选卷中有多少份卷包含该考点")
+    total_question_hits: int = Field(description="跨卷题目行上该考点出现次数之和")
+
+
+class ChapterHintCount(BaseModel):
+    hint: str
+    count: int
+
+
+class ChapterDistributionSlice(BaseModel):
+    paper_id: str
+    display_name: str | None = None
+    chapters: list[ChapterHintCount] = Field(default_factory=list)
+
+
+class MultiPaperAnalysisResponse(BaseModel):
+    conversation_id: str
+    paper_summaries: list[PaperSummaryInAnalysis] = Field(default_factory=list)
+    knowledge_coverage_diff: KnowledgeCoverageDiff
+    question_type_distribution: list[QuestionTypeDistributionSlice] = Field(default_factory=list)
+    repeated_knowledge_points: list[RepeatedKnowledgePoint] = Field(default_factory=list)
+    chapter_distribution: list[ChapterDistributionSlice] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list, description="如无考点分析 JSON 等时的提示")

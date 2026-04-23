@@ -34,6 +34,8 @@ type Props = {
   onContinueWorkflow?: (id: string) => void;
   /** 同会话：重试练习生成 */
   onRegenerateLast?: (id: string) => void;
+  /** 打开多卷分析预研页（由主区切换视图） */
+  onOpenMultiPaper?: () => void;
 };
 
 function lastArtifactShort(cat: string | null | undefined): string {
@@ -79,6 +81,7 @@ export function ConversationSidebar({
   onDeleted,
   onContinueWorkflow,
   onRegenerateLast,
+  onOpenMultiPaper,
 }: Props) {
   const [items, setItems] = useState<ConversationListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -238,6 +241,15 @@ export function ConversationSidebar({
           >
             ＋ 新对话
           </button>
+          {onOpenMultiPaper ? (
+            <button
+              type="button"
+              className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-900 hover:bg-violet-100"
+              onClick={() => onOpenMultiPaper()}
+            >
+              多卷分析（预研）
+            </button>
+          ) : null}
           <p className="text-xs leading-snug text-slate-500">
             切换会话时当前生成可在后台继续（列表显示「生成中」）。↗ 可在新标签页并行打开会话。
             <span className="mt-0.5 block">右键会话或点 ✎ 可重命名；右键可继续主流程或重试练习。</span>

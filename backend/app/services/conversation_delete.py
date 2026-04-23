@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.models import Artifact, Conversation, ExamPaper, Message
+from app.db.models import Artifact, Conversation, ExamPaper, Message, QuestionAsset
 
 
 async def delete_conversation_cascade(session: AsyncSession, conversation_id: str) -> None:
@@ -17,6 +17,7 @@ async def delete_conversation_cascade(session: AsyncSession, conversation_id: st
     r = await session.execute(select(ExamPaper.id).where(ExamPaper.conversation_id == conversation_id))
     paper_ids = [row[0] for row in r.all()]
     if paper_ids:
+        await session.execute(delete(QuestionAsset).where(QuestionAsset.paper_id.in_(paper_ids)))
         await session.execute(delete(Artifact).where(Artifact.paper_id.in_(paper_ids)))
     await session.execute(delete(ExamPaper).where(ExamPaper.conversation_id == conversation_id))
     await session.execute(delete(Message).where(Message.conversation_id == conversation_id))

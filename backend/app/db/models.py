@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -81,3 +81,31 @@ class Artifact(Base):
     config_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     paper: Mapped["ExamPaper"] = relationship(back_populates="artifacts")
+
+
+class QuestionAsset(Base):
+    """V2.2：结构化确认后的题目行级资产（可追溯，多版本按 structured_version 区分）。"""
+
+    __tablename__ = "question_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "paper_id",
+            "structured_version",
+            "question_order",
+            name="uq_question_asset_paper_ver_order",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("exam_papers.id"), index=True)
+    structured_version: Mapped[int] = mapped_column(default=0)
+    question_order: Mapped[int] = mapped_column()
+    section_title: Mapped[str] = mapped_column(String(512), default="")
+    qtype: Mapped[str] = mapped_column(String(128), default="")
+    stem: Mapped[str] = mapped_column(Text, default="")
+    options_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    knowledge_point_keys_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    alignment_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
