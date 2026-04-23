@@ -48,6 +48,26 @@ def test_list_conversations():
         assert isinstance(data["conversations"], list)
 
 
+def test_list_conversations_has_v21_fields():
+    with TestClient(app) as client:
+        r = client.get("/api/conversations")
+        assert r.status_code == 200
+        rows = r.json().get("conversations") or []
+        if not rows:
+            return
+        row = rows[0]
+        assert "subject" in row
+        assert "grade_range" in row
+        assert "last_artifact_category" in row
+
+
+def test_list_conversations_subject_filter():
+    with TestClient(app) as client:
+        r = client.get("/api/conversations", params={"subject": "__no_match_xyz__"})
+        assert r.status_code == 200
+        assert r.json().get("conversations") == []
+
+
 def test_patch_conversation_title():
     with TestClient(app) as client:
         r = client.post("/api/conversations")

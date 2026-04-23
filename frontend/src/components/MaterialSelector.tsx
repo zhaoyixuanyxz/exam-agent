@@ -8,6 +8,8 @@ export type PaperListItem = {
   raw_path: string | null;
   display_name?: string | null;
   structured_confirm_status?: string;
+  /** 服务端保存的练习生成配置快照 */
+  last_practice_config?: Record<string, unknown> | null;
 };
 
 type Props = {

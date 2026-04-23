@@ -107,13 +107,30 @@ def try_recover_practice_pdf_from_assistant_text(text: str, paper_id: str | None
         except Exception:
             return text, False
 
-        for kind, path in (("pdf_question", q_path), ("pdf_answer", a_path)):
+        q_disp = f"{subj} · {practice.knowledge_point_name} · 练习卷"
+        a_disp = f"{subj} · {practice.knowledge_point_name} · 参考答案"
+        snap = {
+            "knowledge_point_key": practice.knowledge_point_key,
+            "knowledge_point_name": practice.knowledge_point_name,
+            "subject": subj,
+            "grade_min": align.get("grade_min"),
+            "grade_max": align.get("grade_max"),
+            "recovered_from_assistant": True,
+        }
+        for kind, path, disp in (
+            ("pdf_question", q_path, q_disp),
+            ("pdf_answer", a_path, a_disp),
+        ):
             session.add(
                 Artifact(
                     paper_id=paper_id,
                     kind=kind,
                     path=path.as_posix(),
                     knowledge_point_key=practice.knowledge_point_key,
+                    display_name=disp,
+                    source_tool="practice_json_recovery",
+                    output_mode="questions_and_answers",
+                    config_snapshot_json=snap,
                 )
             )
         session.commit()

@@ -1,6 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.db.migrate import apply_sqlite_exam_paper_v2_columns
+from app.db.migrate import (
+    apply_sqlite_artifact_v21_columns,
+    apply_sqlite_exam_paper_practice_config_column,
+    apply_sqlite_exam_paper_v2_columns,
+)
 from app.db.models import Base
 from app.db.session import engine
 
@@ -10,3 +14,5 @@ async def init_db(db_engine: AsyncEngine | None = None) -> None:
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(apply_sqlite_exam_paper_v2_columns)
+        await conn.run_sync(apply_sqlite_exam_paper_practice_config_column)
+        await conn.run_sync(apply_sqlite_artifact_v21_columns)

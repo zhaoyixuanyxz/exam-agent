@@ -58,6 +58,8 @@ class ExamPaper(Base):
     knowledge_analysis_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     knowledge_markdown_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # V2.1：界面「练习生成配置」最后保存的快照；出题工具优先与此合并
+    last_practice_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="papers")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="paper")
@@ -72,5 +74,10 @@ class Artifact(Base):
     path: Mapped[str] = mapped_column(String(1024))
     knowledge_point_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # V2.1：产物元信息（旧行可为空，由列表 API 做兼容兜底）
+    display_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_tool: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    output_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     paper: Mapped["ExamPaper"] = relationship(back_populates="artifacts")

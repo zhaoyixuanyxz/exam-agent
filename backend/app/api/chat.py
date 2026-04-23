@@ -7,7 +7,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.agent.graph import delete_agent_thread, get_agent_graph
 from app.agent.tools import AGENT_TOOLS
 from app.config import settings
-from app.db.models import Conversation, ExamPaper, Message
+from app.db.models import Artifact, Conversation, ExamPaper, Message
 from app.models.schemas import StructuredPaper
 from app.db.session import SessionLocal, get_session
 from app.db.sync_session import sync_session
@@ -65,6 +65,76 @@ def _artifact_url(abs_path: str) -> str:
         return f"/export-files/{rel.as_posix()}"
     except ValueError:
         return ""
+
+
+def _artifact_ui_category(kind: str) -> str:
+    """产物中心分类：与 kind 区分，供前端分组展示。"""
+    if kind == "markdown":
+        return "knowledge_markdown"
+    if kind == "pdf_question":
+        return "practice_question_pdf"
+    if kind == "pdf_answer":
+        return "practice_answer_pdf"
+    return "other"
+
+
+def _iso_utc_naive(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat()
+
+
+def _path_mtime_iso(abs_path: str) -> str | None:
+    try:
+        st = Path(abs_path).stat()
+        return datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
+def _normalize_practice_generate_config(raw: dict[str, Any]) -> dict[str, Any]:
+    """将前端练习配置 JSON 规范化为入库结构。"""
+    out: dict[str, Any] = {}
+    if "question_count" in raw:
+        try:
+            out["question_count"] = max(1, min(60, int(raw["question_count"])))
+        except (TypeError, ValueError):
+            pass
+    d = raw.get("difficulty")
+    if d is not None:
+        ds = str(d).strip().lower()
+        if ds in ("easy", "medium", "hard", "简单", "中等", "困难"):
+            mmap = {"简单": "easy", "中等": "medium", "困难": "hard"}
+            out["difficulty"] = mmap.get(ds, ds)
+    qt = raw.get("question_types")
+    if isinstance(qt, list):
+        allowed: list[str] = []
+        for x in qt:
+            s = str(x).strip()
+            if s in ("单选", "多选", "填空", "简答", "判断"):
+                allowed.append(s)
+            elif s == "选择题":
+                allowed.extend(["单选", "多选"])
+        allowed = list(dict.fromkeys(allowed))
+        if allowed:
+            out["question_types"] = allowed
+    om = raw.get("output_mode")
+    if om is not None:
+        o = str(om).strip().lower()
+        if o in ("questions_only", "questions_and_answers", "仅题目", "题目+答案"):
+            if o == "仅题目":
+                o = "questions_only"
+            elif o == "题目+答案":
+                o = "questions_and_answers"
+            out["output_mode"] = o
+    pm = raw.get("paper_mode")
+    if pm is not None and str(pm).strip():
+        out["paper_mode"] = str(pm).strip()
+    if "use_original_figures" in raw:
+        out["use_original_figures"] = bool(raw["use_original_figures"])
+    if "include_figures" in raw:
+        out["include_figures"] = bool(raw["include_figures"])
+    return out
 
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -169,6 +239,7 @@ async def chat_stream(
     url: str | None = Form(None),
     file: UploadFile | None = File(None),
     target_paper_id: str | None = Form(None),
+    practice_generate_config: str | None = Form(None),
 ):
     conv = await session.get(Conversation, conversation_id)
     if not conv:
@@ -273,6 +344,34 @@ async def chat_stream(
     )
     paper_count = int(pc_r.scalar_one() or 0)
 
+    practice_config_fragment = ""
+    if (
+        paper_id
+        and practice_generate_config is not None
+        and str(practice_generate_config).strip()
+    ):
+        try:
+            cfg_raw = json.loads(practice_generate_config)
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"practice_generate_config 须为合法 JSON：{e!s}") from e
+        if not isinstance(cfg_raw, dict):
+            raise HTTPException(400, "practice_generate_config 须为 JSON 对象")
+        cfg_norm = _normalize_practice_generate_config(cfg_raw)
+        ep = await session.get(ExamPaper, paper_id)
+        if ep and ep.conversation_id == conversation_id:
+            prev = ep.last_practice_config_json if isinstance(ep.last_practice_config_json, dict) else {}
+            merged = {**prev, **cfg_norm}
+            ep.last_practice_config_json = merged
+            session.add(ep)
+            await session.commit()
+            practice_config_fragment = (
+                "\n\n【练习生成默认配置】"
+                + json.dumps(merged, ensure_ascii=False)
+                + "\n若本回合需要出题，调用 generate_chunk_practice_pdf 或 generate_chunk_practice_pdfs_batch 时，"
+                "须通过工具参数传入与上述一致的 difficulty、question_types_json（JSON 数组字符串）、"
+                "output_mode、use_original_figures、include_figures；题量以配置中的 question_count 为准（工具 question_count 应与其一致）。\n"
+            )
+
     base_msg = (message.strip() or "请根据我提供的材料开始分析试卷。") + extra_note
     ctx = (
         f"【系统上下文】conversation_id={conversation_id}；paper_id={paper_id}；本会话累计试卷材料份数={paper_count}。"
@@ -280,7 +379,7 @@ async def chat_stream(
         "若份数大于 1 且用户未在界面选择目标、也未说明材料，须用简短中文请用户选择或说明（可提示 paper_id 前 8 位），禁止猜测。"
         "工具调用的 paper_id 必须与上述 paper_id 一致。\n\n"
     )
-    user_content = ctx + base_msg
+    user_content = ctx + base_msg + practice_config_fragment
 
     session.add(
         Message(
@@ -425,7 +524,8 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
             s.execute(
                 select(ExamPaper)
                 .where(ExamPaper.conversation_id == conversation_id)
-                .order_by(ExamPaper.created_at.desc())
+                .options(selectinload(ExamPaper.artifacts))
+                .order_by(ExamPaper.created_at.desc()),
             )
             .scalars()
             .all()
@@ -439,27 +539,62 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                     seen.add(mp)
                     md_name = Path(mp).name
                     md_name = _markdown_artifact_display_name(md_name)
+                    created = (
+                        _path_mtime_iso(mp)
+                        or _iso_utc_naive(p.structured_updated_at)
+                        or _iso_utc_naive(p.created_at)
+                    )
                     items.append(
                         {
+                            "id": f"md:{p.id}",
                             "kind": "markdown",
+                            "category": _artifact_ui_category("markdown"),
                             "path": mp,
                             "url": _artifact_url(mp),
                             "name": md_name,
-                        }
+                            "paper_id": p.id,
+                            "paper_display_name": p.display_name,
+                            "knowledge_point_key": None,
+                            "created_at": created,
+                            "source_tool": "run_knowledge_analysis",
+                            "config_snapshot": None,
+                            "output_mode": None,
+                        },
                     )
-            for a in p.artifacts:
+            arts = sorted(
+                p.artifacts or [],
+                key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
+            for a in arts:
                 if a.path in seen:
                     continue
                 seen.add(a.path)
+                disp = a.display_name or Path(a.path).name
                 items.append(
                     {
+                        "id": a.id,
                         "kind": a.kind,
+                        "category": _artifact_ui_category(a.kind),
                         "path": a.path,
                         "url": _artifact_url(a.path),
-                        "name": Path(a.path).name,
+                        "name": disp,
+                        "paper_id": p.id,
+                        "paper_display_name": p.display_name,
                         "knowledge_point_key": a.knowledge_point_key,
-                    }
+                        "created_at": _iso_utc_naive(a.created_at),
+                        "source_tool": a.source_tool,
+                        "config_snapshot": a.config_snapshot_json,
+                        "output_mode": a.output_mode,
+                    },
                 )
+
+        def _sort_key(d: dict) -> tuple[str, str]:
+            ca = d.get("created_at") or ""
+            i = str(d.get("id") or "")
+            return (ca, i)
+
+        items.sort(key=_sort_key, reverse=True)
         return items
 
 
@@ -485,6 +620,9 @@ async def list_conversation_papers(
                 "raw_path": p.raw_path,
                 "display_name": p.display_name,
                 "structured_confirm_status": effective_structured_status(p),
+                "last_practice_config": p.last_practice_config_json
+                if isinstance(p.last_practice_config_json, dict)
+                else None,
             }
             for p in papers
         ]
@@ -704,7 +842,12 @@ def _preview_from_user_content(content: str | None, max_len: int = 80) -> str:
 
 
 @router.get("/conversations")
-async def list_conversations(session: Annotated[AsyncSession, Depends(get_session)]):
+async def list_conversations(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subject: str | None = Query(None, description="按学科子串筛选"),
+    date_from: str | None = Query(None, description="最近活动时间起 YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="最近活动时间止 YYYY-MM-DD"),
+):
     """按最近一条消息时间排序；无消息时按会话创建时间。"""
     last_msg = (
         select(
@@ -749,6 +892,38 @@ async def list_conversations(session: Annotated[AsyncSession, Depends(get_sessio
     )
     r = await session.execute(stmt)
     rows = r.all()
+    conv_ids = [row.id for row in rows]
+
+    subject_by_c: dict[str, str | None] = {}
+    grade_by_c: dict[str, str | None] = {}
+    last_art_cat_by_c: dict[str, str | None] = {}
+    if conv_ids:
+        rp = await session.execute(select(ExamPaper).where(ExamPaper.conversation_id.in_(conv_ids)))
+        all_papers = rp.scalars().all()
+        papers_by_c: dict[str, list[ExamPaper]] = {}
+        for p in all_papers:
+            papers_by_c.setdefault(p.conversation_id, []).append(p)
+        for cid, plist in papers_by_c.items():
+            with_a = [p for p in plist if p.alignment_json]
+            if with_a:
+                with_a.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
+                aj = with_a[0].alignment_json or {}
+                sub = aj.get("subject")
+                subject_by_c[cid] = str(sub) if sub else None
+                gmin, gmax = aj.get("grade_min"), aj.get("grade_max")
+                if gmin or gmax:
+                    grade_by_c[cid] = f"{gmin or '?'}—{gmax or '?'}"
+
+        ra = await session.execute(
+            select(Artifact, ExamPaper.conversation_id)
+            .join(ExamPaper, Artifact.paper_id == ExamPaper.id)
+            .where(ExamPaper.conversation_id.in_(conv_ids))
+            .order_by(Artifact.created_at.desc()),
+        )
+        for art, conv_id in ra.all():
+            if conv_id not in last_art_cat_by_c:
+                last_art_cat_by_c[conv_id] = _artifact_ui_category(art.kind)
+
     items: list[dict] = []
     for row in rows:
         raw_preview = row.first_user_raw
@@ -762,8 +937,37 @@ async def list_conversations(session: Annotated[AsyncSession, Depends(get_sessio
                 "message_count": int(row.message_count or 0),
                 "paper_count": int(row.paper_count or 0),
                 "preview": preview or "（空对话）",
+                "subject": subject_by_c.get(row.id),
+                "grade_range": grade_by_c.get(row.id),
+                "last_artifact_category": last_art_cat_by_c.get(row.id),
             }
         )
+
+    sub_f = (subject or "").strip()
+    df = (date_from or "").strip()[:10]
+    dt = (date_to or "").strip()[:10]
+    if sub_f:
+        items = [
+            it
+            for it in items
+            if sub_f in (it.get("subject") or "")
+            or sub_f in (it.get("title") or "")
+            or sub_f in (it.get("preview") or "")
+        ]
+    if df or dt:
+
+        def _ok_iso(iso: str | None) -> bool:
+            d = (iso or "")[:10]
+            if len(d) != 10:
+                return False
+            if df and d < df:
+                return False
+            if dt and d > dt:
+                return False
+            return True
+
+        items = [it for it in items if _ok_iso(it.get("last_activity_at"))]
+
     return {"conversations": items}
 
 

@@ -3,10 +3,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStreamJobs, type StreamArtifact } from "../context/StreamJobsContext";
 import { displayUserMessageContent, textForChatDisplay } from "../utils/chatDisplay";
 import { MaterialSelector, type PaperListItem } from "./MaterialSelector";
+import {
+  defaultPracticeConfig,
+  mergeServerPracticeConfig,
+  practiceConfigToJson,
+  PracticeGenerateConfigPanel,
+  type PracticeGenerateConfig,
+} from "./PracticeGenerateConfigPanel";
 import { StructuredResultPanel } from "./StructuredResultPanel";
+import { ArtifactCenter } from "./ArtifactCenter";
 import { WorkflowStepper } from "./WorkflowStepper";
 
 type Bubble = { role: "user" | "assistant"; text: string };
+
+export type ChatBootAction = {
+  conversationId: string;
+  kind: "continue" | "regenerate";
+  token: number;
+};
 
 const API = "";
 
@@ -14,6 +28,9 @@ type ChatProps = {
   conversationId: string;
   /** 发送一轮完成后用于刷新侧边栏排序与预览 */
   onConversationActivity?: () => void;
+  /** 侧栏「继续流程 / 重试练习」等快捷入口 */
+  bootAction?: ChatBootAction | null;
+  onBootActionConsumed?: () => void;
 };
 
 function parsePageRanges(s: string): number[][] | null {
@@ -33,7 +50,12 @@ function parsePageRanges(s: string): number[][] | null {
   return out.length ? out : null;
 }
 
-export function Chat({ conversationId, onConversationActivity }: ChatProps) {
+export function Chat({
+  conversationId,
+  onConversationActivity,
+  bootAction,
+  onBootActionConsumed,
+}: ChatProps) {
   const { getJob, startStream, clearStreamError } = useStreamJobs();
   const job = getJob(conversationId);
   const streamRefreshNonce = job.refreshNonce;
@@ -51,9 +73,13 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   const [splitRanges, setSplitRanges] = useState("");
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
+  const [practiceConfig, setPracticeConfig] = useState<PracticeGenerateConfig>(() => ({
+    ...defaultPracticeConfig,
+  }));
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const conversationIdRef = useRef(conversationId);
+  const lastBootTokenRef = useRef<number>(0);
 
   conversationIdRef.current = conversationId;
 
@@ -79,6 +105,8 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
   }, [conversationId, streamRefreshNonce, loadPapers]);
 
   useEffect(() => {
+    setBubbles([]);
+    setArtifacts([]);
     setTargetPaperId(null);
     setV2Tick(0);
     setClientStreamErrorHint(null);
@@ -97,6 +125,99 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
       setTargetPaperId(job.streamPaperId);
     }
   }, [job.streamPaperId]);
+
+  useEffect(() => {
+    if (!targetPaperId) {
+      setPracticeConfig({ ...defaultPracticeConfig });
+      return;
+    }
+    const p = papers.find((x) => x.id === targetPaperId);
+    setPracticeConfig(mergeServerPracticeConfig(p?.last_practice_config ?? null));
+  }, [targetPaperId, papers]);
+
+  useEffect(() => {
+    if (!bootAction || bootAction.conversationId !== conversationId) return;
+    if (busy) return;
+    if (bootAction.token === lastBootTokenRef.current) return;
+    lastBootTokenRef.current = bootAction.token;
+    setClientStreamErrorHint(null);
+    const msg =
+      bootAction.kind === "continue"
+        ? "请根据当前材料与主流程进度继续：不要重复已成功的步骤；若结构化未确认请先引导确认；然后按需执行对齐保存、考点分析与练习生成。"
+        : "请基于当前已完成的考点分析，为主要考点调用 generate_chunk_practice_pdfs_batch 或 generate_chunk_practice_pdf 生成分块练习 PDF（按考点批量、避免遗漏），并遵守界面练习生成配置。";
+    const fd = new FormData();
+    fd.append("conversation_id", conversationId);
+    fd.append("message", msg);
+    fd.append("source_type", "text");
+    if (targetPaperId) fd.append("target_paper_id", targetPaperId);
+    fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
+    setBubbles((b) => [
+      ...b,
+      {
+        role: "user",
+        text:
+          bootAction.kind === "continue"
+            ? "（侧栏：继续主流程）"
+            : "（侧栏：重试练习生成）",
+      },
+    ]);
+    startStream(conversationId, fd, {
+      onComplete: () => {
+        onBootActionConsumed?.();
+        onConversationActivity?.();
+        void loadPapers();
+        setV2Tick((t) => t + 1);
+        setClientStreamErrorHint(null);
+      },
+    });
+  }, [
+    bootAction,
+    busy,
+    conversationId,
+    loadPapers,
+    onBootActionConsumed,
+    onConversationActivity,
+    practiceConfig,
+    startStream,
+  ]);
+
+  const handleRegenerateFromArtifact = useCallback(
+    (art: StreamArtifact) => {
+      if (busy || !targetPaperId || !art.knowledge_point_key) return;
+      setClientStreamErrorHint(null);
+      const kp = String(art.knowledge_point_key);
+      const fd = new FormData();
+      fd.append("conversation_id", conversationId);
+      fd.append(
+        "message",
+        `请仅针对考点 knowledge_point_key=${kp} 调用 generate_chunk_practice_pdf（若用户还要求多考点再用批量工具），参数须与界面练习生成配置一致。`,
+      );
+      fd.append("source_type", "text");
+      fd.append("target_paper_id", targetPaperId);
+      fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
+      setBubbles((b) => [
+        ...b,
+        { role: "user", text: `（产物中心：按考点再生成 · ${kp.slice(0, 10)}…）` },
+      ]);
+      startStream(conversationId, fd, {
+        onComplete: () => {
+          onConversationActivity?.();
+          void loadPapers();
+          setV2Tick((t) => t + 1);
+          setClientStreamErrorHint(null);
+        },
+      });
+    },
+    [
+      busy,
+      conversationId,
+      loadPapers,
+      onConversationActivity,
+      practiceConfig,
+      startStream,
+      targetPaperId,
+    ],
+  );
 
   const splitTarget = useMemo(() => {
     const pdf = papers.filter((x) => x.source_type === "pdf" && x.raw_path);
@@ -233,6 +354,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     fd.append("message", "请仅对当前目标试卷调用 structure_exam_paper 工具完成拆题，不要跳过。");
     fd.append("source_type", "text");
     fd.append("target_paper_id", targetPaperId);
+    fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
     setBubbles((b) => [...b, { role: "user", text: "（重新结构化：请运行拆题）" }]);
     startStream(conversationId, fd, {
       onComplete: () => {
@@ -242,7 +364,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         setClientStreamErrorHint(null);
       },
     });
-  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+  }, [busy, conversationId, loadPapers, onConversationActivity, practiceConfig, startStream, targetPaperId]);
 
   const handleRetryAnalyze = useCallback(() => {
     if (busy || !targetPaperId) return;
@@ -255,6 +377,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     );
     fd.append("source_type", "text");
     fd.append("target_paper_id", targetPaperId);
+    fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
     setBubbles((b) => [...b, { role: "user", text: "（主流程重试：考点分析）" }]);
     startStream(conversationId, fd, {
       onComplete: () => {
@@ -264,7 +387,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         setClientStreamErrorHint(null);
       },
     });
-  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+  }, [busy, conversationId, loadPapers, onConversationActivity, practiceConfig, startStream, targetPaperId]);
 
   const handleRetryGenerate = useCallback(() => {
     if (busy || !targetPaperId) return;
@@ -277,6 +400,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     );
     fd.append("source_type", "text");
     fd.append("target_paper_id", targetPaperId);
+    fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
     setBubbles((b) => [...b, { role: "user", text: "（主流程重试：生成练习）" }]);
     startStream(conversationId, fd, {
       onComplete: () => {
@@ -286,7 +410,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         setClientStreamErrorHint(null);
       },
     });
-  }, [busy, conversationId, loadPapers, onConversationActivity, startStream, targetPaperId]);
+  }, [busy, conversationId, loadPapers, onConversationActivity, practiceConfig, startStream, targetPaperId]);
 
   const handleRetryDownload = useCallback(() => {
     setClientStreamErrorHint(null);
@@ -310,6 +434,7 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
     if (url.trim()) fd.append("url", url.trim());
     if (file) fd.append("file", file);
     if (targetPaperId) fd.append("target_paper_id", targetPaperId);
+    fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
 
     const userLine =
       input.trim() ||
@@ -326,7 +451,19 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         setClientStreamErrorHint(null);
       },
     });
-  }, [busy, conversationId, file, input, loadPapers, onConversationActivity, sourceType, startStream, targetPaperId, url]);
+  }, [
+    busy,
+    conversationId,
+    file,
+    input,
+    loadPapers,
+    onConversationActivity,
+    practiceConfig,
+    sourceType,
+    startStream,
+    targetPaperId,
+    url,
+  ]);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 md:pl-2">
@@ -377,6 +514,11 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
           onRestructure={handleRestructure}
           busy={busy}
         />
+        <PracticeGenerateConfigPanel
+          value={practiceConfig}
+          onChange={setPracticeConfig}
+          disabled={busy}
+        />
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto rounded-2xl border border-slate-200/80 bg-paper/90 p-4 shadow-inner">
@@ -423,33 +565,11 @@ export function Chat({ conversationId, onConversationActivity }: ChatProps) {
         <div ref={bottomRef} />
       </div>
 
-      {displayArtifacts.length > 0 && (
-        <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/80 p-3 text-sm text-amber-950">
-          <div className="mb-2 flex items-center gap-2 font-medium">
-            <span>📎</span> 生成文件
-          </div>
-          <ul className="flex flex-col gap-1">
-            {displayArtifacts.map((a, i) => (
-              <li key={i}>
-                {a.url ? (
-                  <a
-                    className="text-sky-700 underline decoration-sky-300 hover:text-sky-900"
-                    href={a.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {a.kind === "markdown" ? "📄" : "📕"} {a.name}
-                  </a>
-                ) : (
-                  <span>
-                    {a.name} <span className="text-slate-400">(路径未映射 URL)</span>
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <ArtifactCenter
+        items={displayArtifacts}
+        busy={busy}
+        onRegenerateFromArtifact={handleRegenerateFromArtifact}
+      />
 
       {splitTarget && (
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-xs text-slate-600">

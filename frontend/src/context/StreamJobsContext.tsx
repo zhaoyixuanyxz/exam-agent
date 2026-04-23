@@ -18,6 +18,14 @@ export type StreamArtifact = {
   path: string;
   url?: string;
   knowledge_point_key?: string | null;
+  id?: string;
+  category?: string;
+  paper_id?: string;
+  paper_display_name?: string | null;
+  created_at?: string | null;
+  source_tool?: string | null;
+  config_snapshot?: Record<string, unknown> | null;
+  output_mode?: string | null;
 };
 
 type JobSnapshot = {

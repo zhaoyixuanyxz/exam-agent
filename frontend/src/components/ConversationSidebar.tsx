@@ -16,6 +16,9 @@ export type ConversationListItem = {
   last_activity_at: string | null;
   message_count: number;
   paper_count: number;
+  subject?: string | null;
+  grade_range?: string | null;
+  last_artifact_category?: string | null;
 };
 
 type Props = {
@@ -27,7 +30,22 @@ type Props = {
   onNewChat: () => Promise<void>;
   /** 删除成功后调用；若删掉的是当前会话，由父组件切换 activeId。 */
   onDeleted?: (id: string) => void | Promise<void>;
+  /** 同会话续作：继续主流程 */
+  onContinueWorkflow?: (id: string) => void;
+  /** 同会话：重试练习生成 */
+  onRegenerateLast?: (id: string) => void;
 };
+
+function lastArtifactShort(cat: string | null | undefined): string {
+  if (!cat) return "";
+  const m: Record<string, string> = {
+    knowledge_markdown: "考点说明",
+    practice_question_pdf: "练习卷",
+    practice_answer_pdf: "答案",
+    other: "文件",
+  };
+  return m[cat] || cat;
+}
 
 function formatShortDate(iso: string | null): string {
   if (!iso) return "";
@@ -59,6 +77,8 @@ export function ConversationSidebar({
   onSelect,
   onNewChat,
   onDeleted,
+  onContinueWorkflow,
+  onRegenerateLast,
 }: Props) {
   const [items, setItems] = useState<ConversationListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,12 +86,26 @@ export function ConversationSidebar({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
+  const [filterSubject, setFilterSubject] = useState("");
+  const [datePreset, setDatePreset] = useState<"all" | "7d" | "30d">("all");
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API}/api/conversations`);
+      const q = new URLSearchParams();
+      if (filterSubject.trim()) q.set("subject", filterSubject.trim());
+      if (datePreset === "7d") {
+        const d = new Date();
+        d.setDate(d.getDate() - 7);
+        q.set("date_from", d.toISOString().slice(0, 10));
+      } else if (datePreset === "30d") {
+        const d = new Date();
+        d.setDate(d.getDate() - 30);
+        q.set("date_from", d.toISOString().slice(0, 10));
+      }
+      const qs = q.toString();
+      const r = await fetch(`${API}/api/conversations${qs ? `?${qs}` : ""}`);
       const data = await r.json();
       const raw = (data.conversations || []) as Record<string, unknown>[];
       const normalized: ConversationListItem[] = raw.map((row) => ({
@@ -81,6 +115,10 @@ export function ConversationSidebar({
         last_activity_at: row.last_activity_at != null ? String(row.last_activity_at) : null,
         message_count: Number(row.message_count ?? 0),
         paper_count: Number(row.paper_count ?? 0),
+        subject: row.subject != null ? String(row.subject) : null,
+        grade_range: row.grade_range != null ? String(row.grade_range) : null,
+        last_artifact_category:
+          row.last_artifact_category != null ? String(row.last_artifact_category) : null,
       }));
       setItems(normalized.filter((x) => x.id));
     } catch {
@@ -88,7 +126,7 @@ export function ConversationSidebar({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [datePreset, filterSubject]);
 
   useEffect(() => {
     void load();
@@ -202,8 +240,26 @@ export function ConversationSidebar({
           </button>
           <p className="text-xs leading-snug text-slate-500">
             切换会话时当前生成可在后台继续（列表显示「生成中」）。↗ 可在新标签页并行打开会话。
-            <span className="mt-0.5 block">右键会话或点 ✎ 可重命名，便于分类查找。</span>
+            <span className="mt-0.5 block">右键会话或点 ✎ 可重命名；右键可继续主流程或重试练习。</span>
           </p>
+          <div className="flex flex-col gap-1.5 rounded-lg border border-slate-100 bg-white/80 p-2">
+            <input
+              type="search"
+              className="w-full rounded-md border border-slate-200 px-2 py-1 text-xs"
+              placeholder="按学科筛选（如 数学）"
+              value={filterSubject}
+              onChange={(e) => setFilterSubject(e.target.value)}
+            />
+            <select
+              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+              value={datePreset}
+              onChange={(e) => setDatePreset(e.target.value as "all" | "7d" | "30d")}
+            >
+              <option value="all">全部时间</option>
+              <option value="7d">最近 7 天</option>
+              <option value="30d">最近 30 天</option>
+            </select>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
           {loading && <p className="px-2 py-4 text-center text-xs text-slate-400">加载列表…</p>}
@@ -244,6 +300,16 @@ export function ConversationSidebar({
                       {customTitle && (
                         <span className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">
                           {c.preview}
+                        </span>
+                      )}
+                      {(c.subject || c.grade_range) && (
+                        <span className="mt-0.5 line-clamp-1 text-[11px] text-violet-700/90">
+                          {[c.subject, c.grade_range].filter(Boolean).join(" · ")}
+                        </span>
+                      )}
+                      {c.last_artifact_category && (
+                        <span className="mt-0.5 text-[10px] text-amber-800/90">
+                          最近产物：{lastArtifactShort(c.last_artifact_category)}
                         </span>
                       )}
                       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
@@ -322,6 +388,34 @@ export function ConversationSidebar({
           >
             重命名…
           </button>
+          {onContinueWorkflow && (
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full px-3 py-2 text-left text-slate-700 hover:bg-sky-50"
+              onClick={() => {
+                onContinueWorkflow(ctxMenu.id);
+                onSelect(ctxMenu.id);
+                setCtxMenu(null);
+              }}
+            >
+              继续主流程…
+            </button>
+          )}
+          {onRegenerateLast && (
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full px-3 py-2 text-left text-slate-700 hover:bg-sky-50"
+              onClick={() => {
+                onRegenerateLast(ctxMenu.id);
+                onSelect(ctxMenu.id);
+                setCtxMenu(null);
+              }}
+            >
+              重试练习生成…
+            </button>
+          )}
         </div>
       )}
 

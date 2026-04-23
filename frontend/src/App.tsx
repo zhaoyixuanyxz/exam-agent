@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { Chat } from "./components/Chat";
+import { Chat, type ChatBootAction } from "./components/Chat";
 import { ConversationSidebar } from "./components/ConversationSidebar";
 import { StreamJobsProvider, useStreamJobs } from "./context/StreamJobsContext";
 
@@ -26,6 +26,7 @@ function replaceUrlWithCid(cid: string) {
 function AppInner() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [listRefreshKey, setListRefreshKey] = useState(0);
+  const [bootAction, setBootAction] = useState<ChatBootAction | null>(null);
   const { abortJob, generatingIds } = useStreamJobs();
 
   const bumpSidebar = useCallback(() => {
@@ -74,6 +75,11 @@ function AppInner() {
     }
   }, [conversationId]);
 
+  const triggerWorkflowBoot = useCallback((id: string, kind: ChatBootAction["kind"]) => {
+    setConversationId(id);
+    setBootAction({ conversationId: id, kind, token: Date.now() });
+  }, []);
+
   const handleNewChat = useCallback(async () => {
     const c = await fetch("/api/conversations", { method: "POST" }).then((r) => r.json());
     setConversationId(c.conversation_id as string);
@@ -114,11 +120,14 @@ function AppInner() {
         onSelect={setConversationId}
         onNewChat={handleNewChat}
         onDeleted={(id) => void handleDeleted(id)}
+        onContinueWorkflow={(id) => triggerWorkflowBoot(id, "continue")}
+        onRegenerateLast={(id) => triggerWorkflowBoot(id, "regenerate")}
       />
       <main className="min-w-0 flex-1">
         <Chat
-          key={conversationId}
           conversationId={conversationId}
+          bootAction={bootAction}
+          onBootActionConsumed={() => setBootAction(null)}
           onConversationActivity={bumpSidebar}
         />
       </main>

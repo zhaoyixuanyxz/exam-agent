@@ -177,8 +177,31 @@ def generate_practice_set(
     use_original_figures: bool = False,
     include_figures: bool = True,
     original_figure_hint: str | None = None,
+    difficulty: str = "medium",
+    allowed_qtypes: list[str] | None = None,
 ) -> PracticeSet:
     _practice_max_tokens = settings.effective_practice_max_output_tokens
+
+    diff_norm = (difficulty or "medium").strip().lower()
+    if diff_norm in ("简单", "易", "easy"):
+        diff_norm = "easy"
+    elif diff_norm in ("困难", "难", "hard"):
+        diff_norm = "hard"
+    else:
+        diff_norm = "medium"
+    if diff_norm == "easy":
+        diff_line = "难度偏基础，侧重单一概念与直接套用，避免过绕的综合题。"
+    elif diff_norm == "hard":
+        diff_line = "难度偏高，可有适度综合、辨析与建模，但须可判分、不超纲。"
+    else:
+        diff_line = "难度中等，兼顾基础与适度综合。"
+
+    qtype_constraint = _PRACTICE_QTYPES_LINE
+    if allowed_qtypes:
+        uniq = [x for x in allowed_qtypes if x in ("单选", "多选", "填空", "简答", "判断")]
+        uniq = list(dict.fromkeys(uniq))
+        if uniq:
+            qtype_constraint = "、".join(uniq) + "（qtype 必须恰好为以上词之一，禁止别名）"
 
     brief = (
         "为防输出截断：每题 stem 控制在约 400 汉字内，answer_outline 约 500 汉字内；"
@@ -204,9 +227,14 @@ def generate_practice_set(
             )
         sys = (
             f"你是资深命题教师。请为考点「{knowledge_point_name}」设计恰好 {n_use} 道练习题。"
-            f"题型只能使用：{_PRACTICE_QTYPES_LINE}"
-            "整套题中须覆盖多种题型（不必五种俱全、数量不必均等）。"
-            "单选题为单项正确答案；多选题 qtype 须为「多选」且 options 给出多个备选项；判断题用对错或正确/错误类表述。"
+            f"{diff_line}"
+            f"题型只能使用：{qtype_constraint}"
+            + (
+                "整套题中须覆盖多种题型（不必五种俱全、数量不必均等）。"
+                if not allowed_qtypes
+                else "须在允许题型范围内搭配，不必五种俱全。"
+            )
+            + "单选题为单项正确答案；多选题 qtype 须为「多选」且 options 给出多个备选项；判断题用对错或正确/错误类表述。"
             "单选、多选题：备选项**只能**写在 options 数组中；stem 只写提问与已知条件，**切勿**在 stem 末尾再写 A. B. C. D. 行（否则会与 options 重复排版）。"
             "题目要有区分度；answer_outline 写清晰解题要点即可，勿写冗长推演。公式用 LaTeX $...$。"
             + no_fig_rule

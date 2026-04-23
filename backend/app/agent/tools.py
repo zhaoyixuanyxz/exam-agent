@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
@@ -58,6 +59,88 @@ def _resolve_knowledge_point(
     return None
 
 
+def _parse_allowed_qtypes_from_json(question_types_json: str) -> list[str] | None:
+    tj = (question_types_json or "").strip()
+    if not tj or tj in ("[]", "null"):
+        return None
+    try:
+        arr = json.loads(tj)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(arr, list):
+        return None
+    allowed: list[str] = []
+    for x in arr:
+        s = str(x).strip()
+        if s in ("单选", "多选", "填空", "简答", "判断"):
+            allowed.append(s)
+        elif s == "选择题":
+            allowed.extend(["单选", "多选"])
+    out = list(dict.fromkeys(allowed))
+    return out or None
+
+
+def _merge_practice_generation(
+    paper: ExamPaper,
+    *,
+    question_count: int,
+    use_original_figures: bool,
+    include_figures: bool,
+    difficulty: str,
+    question_types_json: str,
+    output_mode: str,
+) -> tuple[int, bool, bool, str, list[str] | None, str]:
+    """界面 last_practice_config_json 优先覆盖同名字段；否则用工具入参。"""
+    raw_cfg = getattr(paper, "last_practice_config_json", None)
+    cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
+
+    if "question_count" in cfg:
+        try:
+            n = max(1, min(60, int(cfg["question_count"])))
+        except (TypeError, ValueError):
+            n = max(1, min(60, int(question_count)))
+    else:
+        n = max(1, min(60, int(question_count)))
+
+    uof = bool(cfg["use_original_figures"]) if "use_original_figures" in cfg else use_original_figures
+    incf = bool(cfg["include_figures"]) if "include_figures" in cfg else include_figures
+
+    diff = cfg.get("difficulty", difficulty) if "difficulty" in cfg else difficulty
+    diff = str(diff).strip().lower()
+    if diff in ("简单", "易"):
+        diff = "easy"
+    elif diff in ("困难", "难"):
+        diff = "hard"
+    elif diff in ("中等",):
+        diff = "medium"
+    if diff not in ("easy", "medium", "hard"):
+        diff = "medium"
+
+    om = cfg.get("output_mode", output_mode) if "output_mode" in cfg else output_mode
+    om = str(om).strip().lower()
+    if om in ("仅题目",):
+        om = "questions_only"
+    elif om in ("题目+答案",):
+        om = "questions_and_answers"
+    if om not in ("questions_only", "questions_and_answers"):
+        om = "questions_and_answers"
+
+    allowed: list[str] | None = None
+    if "question_types" in cfg and isinstance(cfg["question_types"], list):
+        allowed = []
+        for x in cfg["question_types"]:
+            s = str(x).strip()
+            if s in ("单选", "多选", "填空", "简答", "判断"):
+                allowed.append(s)
+            elif s == "选择题":
+                allowed.extend(["单选", "多选"])
+        allowed = list(dict.fromkeys(allowed)) or None
+    else:
+        allowed = _parse_allowed_qtypes_from_json(question_types_json)
+
+    return n, uof, incf, diff, allowed, om
+
+
 def _generate_chunk_practice_pdf_for_kp(
     session: Session,
     paper: ExamPaper,
@@ -66,12 +149,25 @@ def _generate_chunk_practice_pdf_for_kp(
     *,
     use_original_figures: bool,
     include_figures: bool,
+    difficulty: str = "medium",
+    question_types_json: str = "[]",
+    output_mode: str = "questions_and_answers",
+    source_tool: str = "generate_chunk_practice_pdf",
+    config_extra: dict | None = None,
 ) -> str | None:
     """生成单考点练习与答案 PDF 并入库；成功返回 None，失败返回简短错误文案。"""
     align = paper.alignment_json or {}
     grade = f"{align.get('grade_min', '?')}—{align.get('grade_max', '?')}"
     subject = str(align.get("subject", "数学"))
-    n = max(1, int(question_count))
+    n, use_original_figures, include_figures, diff, allowed, om = _merge_practice_generation(
+        paper,
+        question_count=question_count,
+        use_original_figures=use_original_figures,
+        include_figures=include_figures,
+        difficulty=difficulty,
+        question_types_json=question_types_json,
+        output_mode=output_mode,
+    )
     order_map: dict[int, list[str]] = {}
     original_figure_hint: str | None = None
     if paper.parsed_json:
@@ -92,6 +188,8 @@ def _generate_chunk_practice_pdf_for_kp(
             use_original_figures=use_original_figures,
             include_figures=include_figures,
             original_figure_hint=original_figure_hint,
+            difficulty=diff,
+            allowed_qtypes=allowed,
         )
         practice.knowledge_point_key = kp.key
         practice.knowledge_point_name = kp.name
@@ -120,47 +218,71 @@ def _generate_chunk_practice_pdf_for_kp(
             collect_figure_diagnostics=diag_practice if write_diag else None,
             collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
         )
-        render_answer_pdf(
-            practice,
-            a_path,
-            title=title,
-            include_figures=include_figures,
-            use_original_figures=use_original_figures,
-            order_index_to_paper_paths=order_map if use_original_figures else None,
-            collect_figure_diagnostics=diag_answers if write_diag else None,
-            collect_formula_diagnostics=diag_form_answers if write_formula_diag else None,
-        )
+        if om == "questions_and_answers":
+            render_answer_pdf(
+                practice,
+                a_path,
+                title=title,
+                include_figures=include_figures,
+                use_original_figures=use_original_figures,
+                order_index_to_paper_paths=order_map if use_original_figures else None,
+                collect_figure_diagnostics=diag_answers if write_diag else None,
+                collect_formula_diagnostics=diag_form_answers if write_formula_diag else None,
+            )
         if write_diag:
             write_figure_embed_records_json(
                 out_dir / f"practice_{safe}_figure_diag_practice.json",
                 diag_practice,
             )
-            write_figure_embed_records_json(
-                out_dir / f"practice_{safe}_figure_diag_answers.json",
-                diag_answers,
-            )
+            if om == "questions_and_answers":
+                write_figure_embed_records_json(
+                    out_dir / f"practice_{safe}_figure_diag_answers.json",
+                    diag_answers,
+                )
         if write_formula_diag:
             write_formula_render_records_json(
                 out_dir / f"practice_{safe}_formula_diag_practice.json",
                 diag_form_practice,
             )
-            write_formula_render_records_json(
-                out_dir / f"practice_{safe}_formula_diag_answers.json",
-                diag_form_answers,
-            )
+            if om == "questions_and_answers":
+                write_formula_render_records_json(
+                    out_dir / f"practice_{safe}_formula_diag_answers.json",
+                    diag_form_answers,
+                )
     except Exception as e:
         return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
     paper_id = paper.id
-    for kind, path in (
-        ("pdf_question", q_path),
-        ("pdf_answer", a_path),
-    ):
+    q_disp = f"{subject} · {kp.name} · 练习卷"
+    a_disp = f"{subject} · {kp.name} · 参考答案"
+    base_snap = {
+        "question_count": n,
+        "use_original_figures": use_original_figures,
+        "include_figures": include_figures,
+        "difficulty": diff,
+        "question_types": allowed,
+        "output_mode": om,
+        "knowledge_point_key": kp.key,
+        "knowledge_point_name": kp.name,
+        "subject": subject,
+        "grade_min": align.get("grade_min"),
+        "grade_max": align.get("grade_max"),
+    }
+    if config_extra:
+        base_snap = {**base_snap, **config_extra}
+    rows: list[tuple[str, Path, str]] = [("pdf_question", q_path, q_disp)]
+    if om == "questions_and_answers":
+        rows.append(("pdf_answer", a_path, a_disp))
+    for kind, path, disp in rows:
         session.add(
             Artifact(
                 paper_id=paper_id,
                 kind=kind,
                 path=path.as_posix(),
                 knowledge_point_key=kp.key,
+                display_name=disp,
+                source_tool=source_tool,
+                output_mode=om,
+                config_snapshot_json=base_snap,
             )
         )
     session.commit()
@@ -269,11 +391,17 @@ def generate_chunk_practice_pdf(
     question_count: int = 10,
     use_original_figures: bool = False,
     include_figures: bool = True,
+    difficulty: str = "medium",
+    question_types_json: str = "[]",
+    output_mode: str = "questions_and_answers",
 ) -> str:
-    """生成分块练习 PDF 与参考答案 PDF（默认 10 题；question_count 为正整数，题量多时会自动分批出题；若接口截断等导致题数不足，PDF 仅含成功生成的题目，不凑占位题）。
+    """生成分块练习 PDF；可选同时生成参考答案 PDF（默认 10 题；题量多时会自动分批出题；若接口截断等导致题数不足，PDF 仅含成功生成的题目，不凑占位题）。
     knowledge_point_key 可为分析结果里的英文 key，或与列表一致的考点中文名称。
     use_original_figures：为 true 时在提示中附带原卷附图索引，并在 PDF 中尝试嵌入（须结构化试卷含 image_ref）。
-    include_figures：为 false 时不插入任何配图（仅文本）。"""
+    include_figures：为 false 时不插入任何配图（仅文本）。
+    difficulty：easy / medium / hard（或与界面【练习生成默认配置】一致）。
+    question_types_json：JSON 数组，题型仅限 单选、多选、填空、简答、判断；空数组表示不限制。
+    output_mode：questions_and_answers（题目+答案）或 questions_only（仅题目）。"""
     with sync_session() as session:
         p = _get_paper(session, paper_id)
         if not p or not p.knowledge_analysis_json:
@@ -290,10 +418,13 @@ def generate_chunk_practice_pdf(
             question_count,
             use_original_figures=use_original_figures,
             include_figures=include_figures,
+            difficulty=difficulty,
+            question_types_json=question_types_json,
+            output_mode=output_mode,
         )
         if err:
             return err
-        return "成功：练习卷与参考答案已生成。"
+        return "成功：练习已生成，请在界面「生成文件」中下载。"
 
 
 @tool
@@ -302,10 +433,13 @@ def generate_chunk_practice_pdfs_batch(
     items_json: str,
     use_original_figures: bool = False,
     include_figures: bool = True,
+    difficulty: str = "medium",
+    question_types_json: str = "[]",
+    output_mode: str = "questions_and_answers",
 ) -> str:
-    """一次为多个考点各生成练习卷与参考答案 PDF。items_json 须为 JSON 数组，每项含 knowledge_point_key（或 key）、可选 question_count（默认 10）。
+    """一次为多个考点各生成练习卷（及可选答案卷）PDF。items_json 须为 JSON 数组，每项含 knowledge_point_key（或 key）、可选 question_count（默认 10）。
     单次调用条数不得超过服务端配置 practice_batch_max_knowledge_points（默认 8）；超出时须拆成多次调用本工具或改用单考点工具分批。
-    多考点时优先使用本工具，减少遗漏。use_original_figures / include_figures 含义同单考点工具。"""
+    多考点时优先使用本工具，减少遗漏。difficulty / question_types_json / output_mode 与单考点工具一致。"""
     cap = max(1, int(settings.practice_batch_max_knowledge_points))
     with sync_session() as session:
         p = _get_paper(session, paper_id)
@@ -343,6 +477,10 @@ def generate_chunk_practice_pdfs_batch(
                 qc,
                 use_original_figures=use_original_figures,
                 include_figures=include_figures,
+                difficulty=difficulty,
+                question_types_json=question_types_json,
+                output_mode=output_mode,
+                source_tool="generate_chunk_practice_pdfs_batch",
             )
             if err:
                 lines.append(f"「{kp.name}」{err}")
