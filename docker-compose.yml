@@ -1,0 +1,18 @@
+# 24x7 云主机部署：docker compose up -d --build
+services:
+  exam-agent:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:8000"
+    volumes:
+      - exam-agent-data:/app/data
+    env_file:
+      - .env.deploy
+    environment:
+      DATA_DIR: /app/data
+      EXAM_AGENT_SERVE_STATIC: "1"
+      EXAM_AGENT_STATIC_DIR: /app/static
+
+volumes:
+  exam-agent-data:

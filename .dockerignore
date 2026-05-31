@@ -1,0 +1,15 @@
+data/
+.git/
+.venv/
+venv/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+*.db
+.env
+backend/.env
+*.egg-info/
+backend/build/

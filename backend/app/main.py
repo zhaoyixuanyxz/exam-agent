@@ -1,7 +1,10 @@
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.graph import setup_checkpoint, shutdown_checkpoint
@@ -53,3 +56,35 @@ app.mount(
     StaticFiles(directory=settings.export_dir.as_posix()),
     name="export-files",
 )
+
+# Docker / VPS：单容器托管前端静态资源（见 Dockerfile、docker-compose.yml）
+_SERVE_STATIC = os.getenv("EXAM_AGENT_SERVE_STATIC", "").strip() in ("1", "true", "yes")
+_STATIC_DIR = Path(os.getenv("EXAM_AGENT_STATIC_DIR", "/app/static"))
+
+
+def _mount_spa_static() -> None:
+    if not _SERVE_STATIC or not _STATIC_DIR.is_dir():
+        return
+
+    assets_dir = _STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir.as_posix()), name="spa-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith(("api/", "api", "export-files/", "export-files")):
+            raise HTTPException(404)
+        candidate = (_STATIC_DIR / full_path).resolve()
+        try:
+            candidate.relative_to(_STATIC_DIR.resolve())
+        except ValueError:
+            raise HTTPException(404) from None
+        if candidate.is_file():
+            return FileResponse(candidate)
+        index = _STATIC_DIR / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        raise HTTPException(404)
+
+
+_mount_spa_static()

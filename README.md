@@ -79,6 +79,19 @@ API 文档：**http://127.0.0.1:8000/docs**
   3. 把 https://xxx.trycloudflare.com 发给同事
 ```
 
+### 24 小时在线 · 你关机也能用（方案 B，推荐长期）
+
+**Docker + 便宜云主机（约 ¥50/月）**，同事只打开 `http://公网IP`，不用 Tailscale。
+
+📖 一步步操作 → **[docs/plan-b-vps-24x7.md](docs/plan-b-vps-24x7.md)**
+
+```bash
+# 在 Ubuntu 云服务器上
+git clone https://github.com/zhaoyixuanyxz/exam-agent.git && cd exam-agent
+cp .env.deploy.example .env.deploy   # 填入 DEEPSEEK_API_KEY
+docker compose up -d --build
+```
+
 ---
 
 ## 界面长什么样？五个 Tab 够用
@@ -175,7 +188,8 @@ exam-agent/
 | 文档 | 适合谁 |
 |------|--------|
 | [docs/用户操作指南.md](docs/用户操作指南.md) | 老师 / 教研 — Tab 怎么用、常见坑 |
-| [docs/plan-a-shared-hosting.md](docs/plan-a-shared-hosting.md) | 管理员 — 托管给他人、发链接 |
+| [docs/plan-a-shared-hosting.md](docs/plan-a-shared-hosting.md) | 管理员 — 本机托管（Tailscale） |
+| [docs/plan-b-vps-24x7.md](docs/plan-b-vps-24x7.md) | 管理员 — 云主机 24h、最低成本 |
 | [DEV_RUNBOOK.md](DEV_RUNBOOK.md) | 开发者 — 环境、依赖、排障 |
 | [docs/需求文档.md](docs/需求文档.md) | 产品 — 功能范围 |
 | [docs/V2_3_audit_and_acceptance.md](docs/V2_3_audit_and_acceptance.md) | 验收 — API 与测试 |
