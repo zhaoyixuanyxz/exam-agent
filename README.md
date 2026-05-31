@@ -61,6 +61,26 @@ API 文档：**http://127.0.0.1:8000/docs**
 
 ---
 
+## 给他人使用 · 方案 A（推荐）
+
+**你托管，同事只开浏览器** — 不用装 Python、不用自己申请 API Key。
+
+| 你是谁 | 做什么 |
+|--------|--------|
+| **管理员（你）** | 双击 **`start-shared.bat`** → 用 Tailscale 或 Cloudflare 隧道发链接 |
+| **使用者（老师）** | 打开链接 → 顶栏「操作指南」按流程用 |
+
+📖 完整步骤 → **[docs/plan-a-shared-hosting.md](docs/plan-a-shared-hosting.md)**
+
+```text
+快速试点（对方零安装）：
+  1. start-shared.bat
+  2. scripts\start-cloudflare-tunnel.ps1
+  3. 把 https://xxx.trycloudflare.com 发给同事
+```
+
+---
+
 ## 界面长什么样？五个 Tab 够用
 
 ```
@@ -155,6 +175,7 @@ exam-agent/
 | 文档 | 适合谁 |
 |------|--------|
 | [docs/用户操作指南.md](docs/用户操作指南.md) | 老师 / 教研 — Tab 怎么用、常见坑 |
+| [docs/plan-a-shared-hosting.md](docs/plan-a-shared-hosting.md) | 管理员 — 托管给他人、发链接 |
 | [DEV_RUNBOOK.md](DEV_RUNBOOK.md) | 开发者 — 环境、依赖、排障 |
 | [docs/需求文档.md](docs/需求文档.md) | 产品 — 功能范围 |
 | [docs/V2_3_audit_and_acceptance.md](docs/V2_3_audit_and_acceptance.md) | 验收 — API 与测试 |

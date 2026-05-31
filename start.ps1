@@ -1,5 +1,9 @@
 # One-click start: venv/deps -> backend API -> Vite -> browser
 # Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+# Shared (others on LAN/Tailscale/tunnel): .\start.ps1 -Shared
+param(
+    [switch]$Shared
+)
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $Backend = Join-Path $Root "backend"
@@ -75,12 +79,21 @@ if (-not $ready) {
     exit 1
 }
 
+$viteHost = if ($Shared) { "0.0.0.0" } else { "127.0.0.1" }
+$sharedEnv = if ($Shared) { '$env:EXAM_AGENT_SHARED=''1''; ' } else { '' }
 Start-Process powershell `
     -WorkingDirectory $Frontend `
-    -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "npm run dev -- --host 127.0.0.1 --port 5173"
+    -ArgumentList "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "${sharedEnv}npm run dev -- --host $viteHost --port 5173"
 
 Start-Sleep -Seconds 3
 Start-Process "http://127.0.0.1:5173"
 
 Write-Host "Opened browser: http://127.0.0.1:5173" -ForegroundColor Green
 Write-Host "API docs: http://127.0.0.1:8000/docs | Close the two new PowerShell windows to stop servers." -ForegroundColor Gray
+if ($Shared) {
+    Write-Host ""
+    Write-Host "=== SHARED MODE (Plan A) ===" -ForegroundColor Cyan
+    Write-Host "Frontend listens on 0.0.0.0:5173 (API still local-only on :8000, proxied by Vite)." -ForegroundColor Gray
+    Write-Host "Share access with colleagues - see docs/plan-a-shared-hosting.md" -ForegroundColor Yellow
+    Write-Host ""
+}
