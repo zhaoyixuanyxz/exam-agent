@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     practice_max_output_tokens: int = 8192
     # 批量考点出题工具单次 items_json 最多条数（防单次请求过久/超时）。
     practice_batch_max_knowledge_points: int = 8
+    # 分难度出题 temperature（朱老师风格迭代，可通过 env 微调）
+    practice_difficulty_temperature_easy: float = 0.15
+    practice_difficulty_temperature_medium: float = 0.25
+    practice_difficulty_temperature_hard: float = 0.30
 
     data_dir: Path = _default_data_dir()
     kaiti_font_path: str | None = None

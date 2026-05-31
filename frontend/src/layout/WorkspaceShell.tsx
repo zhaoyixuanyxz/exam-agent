@@ -7,6 +7,7 @@ import { MultiPaperAnalysisPrototype } from "../components/MultiPaperAnalysisPro
 import { GovernancePage } from "../pages/GovernancePage";
 import { OrgPage } from "../pages/OrgPage";
 import { QuestionBankPage } from "../pages/QuestionBankPage";
+import { UserGuidePage } from "../pages/UserGuidePage";
 import { useStreamJobs } from "../context/StreamJobsContext";
 
 const STORAGE_KEY = "exam-agent-active-cid";
@@ -53,6 +54,9 @@ function NavBar() {
       </NavLink>
       <NavLink className={({ isActive }) => navItem(isActive)} to="/org">
         组织
+      </NavLink>
+      <NavLink className={({ isActive }) => navItem(isActive)} to="/guide" end>
+        操作指南
       </NavLink>
     </nav>
   );
@@ -190,6 +194,7 @@ export function WorkspaceShell() {
             <Route path="/question-bank" element={<QuestionBankPage />} />
             <Route path="/governance" element={<GovernancePage />} />
             <Route path="/org" element={<OrgPage />} />
+            <Route path="/guide" element={<UserGuidePage />} />
             <Route path="*" element={<Navigate to="/workbench" replace />} />
           </Routes>
         </div>

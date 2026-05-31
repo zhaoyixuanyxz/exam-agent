@@ -12,6 +12,11 @@ from app.models.schemas import (
     PracticeSet,
     StructuredPaper,
 )
+from app.prompts.teacher_style import (
+    chunk_size_for_practice_batch,
+    difficulty_temperature,
+    practice_style_prompt_block,
+)
 from app.services.json_from_llm import parse_pydantic_from_llm_text
 from app.services.practice_clamp import clamp_practice_set
 from app.services.practice_parse import parse_practice_set_from_llm_text
@@ -24,20 +29,26 @@ _JSON_ONLY = (
 )
 
 
-def _chat(*, max_tokens: int | None = None) -> ChatOpenAI:
+def _chat(*, max_tokens: int | None = None, temperature: float = 0.2) -> ChatOpenAI:
     kwargs: dict = dict(
         model=settings.deepseek_model,
         api_key=settings.require_deepseek_api_key(),
         base_url=settings.deepseek_base_url,
-        temperature=0.2,
+        temperature=temperature,
     )
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     return ChatOpenAI(**kwargs)
 
 
-def _invoke_text(system: str, human: str, *, max_tokens: int | None = None) -> str:
-    llm = _chat(max_tokens=max_tokens)
+def _invoke_text(
+    system: str,
+    human: str,
+    *,
+    max_tokens: int | None = None,
+    temperature: float = 0.2,
+) -> str:
+    llm = _chat(max_tokens=max_tokens, temperature=temperature)
     msg = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
     if isinstance(msg, AIMessage):
         c = msg.content
@@ -167,6 +178,63 @@ def _subject_figure_hints(subject: str) -> str:
     return "【本科目配图参考】" + "".join(hints)
 
 
+def build_practice_system_prompt(
+    *,
+    knowledge_point_name: str,
+    n_use: int,
+    subject: str,
+    grade_range: str,
+    difficulty: str,
+    qtype_constraint: str,
+    allowed_qtypes: list[str] | None,
+    include_figures: bool,
+    no_fig_rule: str,
+    paper_ctx: str,
+) -> str:
+    """组装练习题生成的 system prompt（供测试快照与 _one_batch 共用）。"""
+    style_block = practice_style_prompt_block(subject, difficulty, grade_range=grade_range)
+    return (
+        f"你是朱老师，资深命题教师。请为考点「{knowledge_point_name}」设计恰好 {n_use} 道练习题。"
+        f"{style_block}"
+        f"题型只能使用：{qtype_constraint}"
+        + (
+            "整套题中须覆盖多种题型（不必五种俱全、数量不必均等）。"
+            if not allowed_qtypes
+            else "须在允许题型范围内搭配，不必五种俱全。"
+        )
+        + "单选题为单项正确答案；多选题 qtype 须为「多选」且 options 给出多个备选项；判断题用对错或正确/错误类表述。"
+        "单选、多选题：备选项**只能**写在 options 数组中；stem 只写提问与已知条件，**切勿**在 stem 末尾再写 A. B. C. D. 行（否则会与 options 重复排版）。"
+        "题目要有区分度，难度与风格须符合上述朱老师标准。公式用 LaTeX $...$。"
+        + no_fig_rule
+        + (
+            ""
+            if not include_figures
+            else (
+                "配图：若题干含「如图」「如图所示」「如下图」「右图」等，**必须**给出 figure_kind 为 geometry、svg 或 composite 的配图，"
+                "且图中须完整呈现题干所述点、线（含角平分线、高、中线等）、交点及字母标注；**禁止**仅有外框而缺题干提到的线。"
+                "无「如图」类字样时：仅当题干**明确写出或表格中给出**可作图数据时才配图；数据不足且无把握时 figure_kind 可为 none，不要强行配图。"
+                "图中数字、类别、点列必须与 stem 中可读信息一致，禁止为凑图虚构数据。"
+                "先判断图种：统计/类别→柱、饼或 histogram；离散折线→plot；材料表→table；进程时间→timeline；集合关系→venn；区间数轴→number_line；"
+                "多幅并列或甲乙图→composite（panels 每项 kind+spec）；几何点线圆弧多边形→geometry；算法/过程→flowchart（可用 layout layered）；受力分析→force_diagram；简易电路→circuit_simple。"
+                "二次函数、抛物线、反比例、指对数等**连续曲线**：要么不配 plot（none），要么 plot 每条线**至少 20 个等距 x** 且 y 按同一式子算对；**严禁**五六个点折线冒充抛物线。"
+                "plot 可用 fill_between 表示两曲线间阴影/面积（数据须与题干一致）。"
+                "figure_spec 必须与 figure_kind 一致；composite 的 panels 不得再嵌套 composite。"
+            )
+            + (_subject_figure_hints(subject) if subject else "")
+        )
+        + (
+            "为防输出截断：每题 stem 控制在约 400 汉字内，answer_outline 约 800–1500 汉字内；"
+            "须写完整【思路】【解答】【相关知识点】三段，禁止在 JSON 字符串里再嵌套第二段 JSON 或 ``` 代码块。"
+            "公式若在 $...$ 内写 LaTeX，JSON 字符串里每个反斜杠须双写（例：\\\\frac{a}{b}、\\\\angle ABC）。"
+            "复杂式子（多行对齐、cases、矩阵等）可使用标准 amsmath 环境（如 aligned、cases、bmatrix），服务端可选 KaTeX/TeX 栅格渲染。"
+            "角度须写 $90^\\\\circ$ 或 $90^{\\\\circ}$，禁止写 ^\\\\wedge\\\\circ；分式与根式须写完整如 $\\\\frac{\\\\sqrt{2}}{2}$，勿输出裸 frac 与空根号。"
+            "若总输出可能超长，优先保证每题解析完整，可适当减少 figure 复杂度，勿为凑图牺牲解析。"
+        )
+        + f"\n{_JSON_ONLY}\n{_PRACTICE_SCHEMA}"
+        + paper_ctx
+    )
+
+
 def generate_practice_set(
     knowledge_point_name: str,
     knowledge_point_summary: str,
@@ -181,6 +249,7 @@ def generate_practice_set(
     allowed_qtypes: list[str] | None = None,
 ) -> PracticeSet:
     _practice_max_tokens = settings.effective_practice_max_output_tokens
+    _practice_temperature = difficulty_temperature(difficulty)
 
     diff_norm = (difficulty or "medium").strip().lower()
     if diff_norm in ("简单", "易", "easy"):
@@ -189,12 +258,6 @@ def generate_practice_set(
         diff_norm = "hard"
     else:
         diff_norm = "medium"
-    if diff_norm == "easy":
-        diff_line = "难度偏基础，侧重单一概念与直接套用，避免过绕的综合题。"
-    elif diff_norm == "hard":
-        diff_line = "难度偏高，可有适度综合、辨析与建模，但须可判分、不超纲。"
-    else:
-        diff_line = "难度中等，兼顾基础与适度综合。"
 
     qtype_constraint = _PRACTICE_QTYPES_LINE
     if allowed_qtypes:
@@ -202,14 +265,6 @@ def generate_practice_set(
         uniq = list(dict.fromkeys(uniq))
         if uniq:
             qtype_constraint = "、".join(uniq) + "（qtype 必须恰好为以上词之一，禁止别名）"
-
-    brief = (
-        "为防输出截断：每题 stem 控制在约 400 汉字内，answer_outline 约 500 汉字内；"
-        "解题步骤精炼，禁止在 JSON 字符串里再嵌套第二段 JSON 或 ``` 代码块。"
-        "公式若在 $...$ 内写 LaTeX，JSON 字符串里每个反斜杠须双写（例：\\\\frac{a}{b}、\\\\angle ABC）。"
-        "复杂式子（多行对齐、cases、矩阵等）可使用标准 amsmath 环境（如 aligned、cases、bmatrix），服务端可选 KaTeX/TeX 栅格渲染。"
-        "角度须写 $90^\\\\circ$ 或 $90^{\\\\circ}$，禁止写 ^\\\\wedge\\\\circ；分式与根式须写完整如 $\\\\frac{\\\\sqrt{2}}{2}$，勿输出裸 frac 与空根号。"
-    )
 
     def _one_batch(n_use: int, attempt: int, order_hint: str = "") -> PracticeSet:
         no_fig_rule = ""
@@ -225,36 +280,17 @@ def generate_practice_set(
                 "无对应条目时不要编造路径：\n"
                 f"{original_figure_hint}\n"
             )
-        sys = (
-            f"你是资深命题教师。请为考点「{knowledge_point_name}」设计恰好 {n_use} 道练习题。"
-            f"{diff_line}"
-            f"题型只能使用：{qtype_constraint}"
-            + (
-                "整套题中须覆盖多种题型（不必五种俱全、数量不必均等）。"
-                if not allowed_qtypes
-                else "须在允许题型范围内搭配，不必五种俱全。"
-            )
-            + "单选题为单项正确答案；多选题 qtype 须为「多选」且 options 给出多个备选项；判断题用对错或正确/错误类表述。"
-            "单选、多选题：备选项**只能**写在 options 数组中；stem 只写提问与已知条件，**切勿**在 stem 末尾再写 A. B. C. D. 行（否则会与 options 重复排版）。"
-            "题目要有区分度；answer_outline 写清晰解题要点即可，勿写冗长推演。公式用 LaTeX $...$。"
-            + no_fig_rule
-            + (
-                ""
-                if not include_figures
-                else (
-                    "配图：若题干含「如图」「如图所示」「如下图」「右图」等，**必须**给出 figure_kind 为 geometry、svg 或 composite 的配图，"
-                    "且图中须完整呈现题干所述点、线（含角平分线、高、中线等）、交点及字母标注；**禁止**仅有外框而缺题干提到的线。"
-                    "无「如图」类字样时：仅当题干**明确写出或表格中给出**可作图数据时才配图；数据不足且无把握时 figure_kind 可为 none，不要强行配图。"
-                    "图中数字、类别、点列必须与 stem 中可读信息一致，禁止为凑图虚构数据。"
-                    "先判断图种：统计/类别→柱、饼或 histogram；离散折线→plot；材料表→table；进程时间→timeline；集合关系→venn；区间数轴→number_line；"
-                    "多幅并列或甲乙图→composite（panels 每项 kind+spec）；几何点线圆弧多边形→geometry；算法/过程→flowchart（可用 layout layered）；受力分析→force_diagram；简易电路→circuit_simple。"
-                    "二次函数、抛物线、反比例、指对数等**连续曲线**：要么不配 plot（none），要么 plot 每条线**至少 20 个等距 x** 且 y 按同一式子算对；**严禁**五六个点折线冒充抛物线。"
-                    "plot 可用 fill_between 表示两曲线间阴影/面积（数据须与题干一致）。"
-                    "figure_spec 必须与 figure_kind 一致；composite 的 panels 不得再嵌套 composite。"
-                )
-                + (_subject_figure_hints(subject) if subject else "")
-            )
-            + f"{brief}\n{_JSON_ONLY}\n{_PRACTICE_SCHEMA}"
+        sys = build_practice_system_prompt(
+            knowledge_point_name=knowledge_point_name,
+            n_use=n_use,
+            subject=subject,
+            grade_range=grade_range,
+            difficulty=diff_norm,
+            qtype_constraint=qtype_constraint,
+            allowed_qtypes=allowed_qtypes,
+            include_figures=include_figures,
+            no_fig_rule=no_fig_rule,
+            paper_ctx=paper_ctx,
         )
         human = (
             f"科目：{subject}；年级范围：{grade_range}\n"
@@ -278,7 +314,12 @@ def generate_practice_set(
                 "若用 svg，svg 字段须为合法 <svg> 片段且无 script；"
                 "use_mathtext 为 true 时图内公式为 mathtext 子集（非正文 LaTeX），反斜杠在 JSON 内须双写。）"
             )
-        raw = _invoke_text(sys, human, max_tokens=_practice_max_tokens)
+        raw = _invoke_text(
+            sys,
+            human,
+            max_tokens=_practice_max_tokens,
+            temperature=_practice_temperature,
+        )
         return parse_practice_set_from_llm_text(raw)
 
     last_err: Exception | None = None
@@ -309,13 +350,9 @@ def generate_practice_set(
             questions=merged[:total],
         )
 
-    # 9～12 题单次 JSON 常被截断，末尾题丢失；按较小 chunk 分批可显著减少缺题。
+    # 完整解析模式下 6 题以上按较小 chunk 分批，降低 JSON 截断风险。
     def _chunk_for_n(total: int) -> int | None:
-        if total > 12:
-            return 12
-        if total >= 9:
-            return 5
-        return None
+        return chunk_size_for_practice_batch(total)
 
     chunk0 = _chunk_for_n(n)
     if chunk0 is not None:

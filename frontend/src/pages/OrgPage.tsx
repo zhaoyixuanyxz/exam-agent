@@ -26,49 +26,62 @@ export function OrgPage() {
   }, [userId]);
 
   return (
-    <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3 text-sm text-slate-800">
-      <h2 className="text-base font-semibold">组织与权限</h2>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-slate-600">X-User-Id</span>
-        <input
-          className="min-w-[240px] rounded border border-slate-200 px-2 py-1 font-mono text-xs"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-        />
-        <button
-          type="button"
-          className="rounded border border-slate-200 bg-white px-2 py-1"
-          onClick={() => {
-            localStorage.setItem("exam-agent-user-id", userId);
-            setErr(null);
-            void 0; // re-trigger: force reload by setState
-            setMe(null);
-            setLogs(null);
-            window.location.reload();
-          }}
-        >
-          应用并刷新
-        </button>
-      </div>
-      {err && <p className="text-xs text-amber-700">{err}</p>}
-      {me && (
-        <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-          <p>用户: {me.display_name || me.id}</p>
-          <p>角色: {me.role} · 数据范围: {me.data_scope}</p>
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-10 text-sm text-slate-700">
+      <div className="mx-auto flex max-w-3xl flex-col gap-3">
+        <div className="rounded-2xl border border-white/60 bg-white/80 p-4 shadow-sm backdrop-blur">
+          <h2 className="text-base font-semibold text-slate-800">组织与权限</h2>
+          <p className="mt-1 text-sm text-slate-600">切换当前请求使用的用户标识，并查看审计留痕（需权限）。</p>
         </div>
-      )}
-      <h3 className="font-medium">审计（管理员）</h3>
-      {logs && logs.length > 0 ? (
-        <ul className="space-y-1 text-xs text-slate-600">
-          {logs.map((l) => (
-            <li key={l.id} className="rounded border border-slate-100 bg-white p-1">
-              {l.created_at} · {l.action} · {l.resource_type} · {l.user_id.slice(0, 8)}…
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-slate-500">无数据或非管理员。默认用户为 admin 可调审计。</p>
-      )}
+
+        <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-slate-600">X-User-Id</span>
+            <input
+              className="min-w-[240px] rounded-lg border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs text-slate-800 shadow-sm"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+            />
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-slate-800 shadow-sm hover:bg-slate-50"
+              onClick={() => {
+                localStorage.setItem("exam-agent-user-id", userId);
+                setErr(null);
+                setMe(null);
+                setLogs(null);
+                window.location.reload();
+              }}
+            >
+              应用并刷新
+            </button>
+          </div>
+          {err && <p className="mt-2 text-xs text-amber-800">{err}</p>}
+          {me && (
+            <div className="mt-3 rounded-xl border border-slate-200/80 bg-slate-50/80 p-3 text-xs text-slate-700">
+              <p>用户: {me.display_name || me.id}</p>
+              <p className="mt-0.5">角色: {me.role} · 数据范围: {me.data_scope}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-slate-800">审计（管理员）</h3>
+          {logs && logs.length > 0 ? (
+            <ul className="mt-2 space-y-1.5 text-xs text-slate-600">
+              {logs.map((l) => (
+                <li
+                  key={l.id}
+                  className="rounded-lg border border-slate-100 bg-slate-50/80 px-2 py-1.5 text-slate-700"
+                >
+                  {l.created_at} · {l.action} · {l.resource_type} · {l.user_id.slice(0, 8)}…
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">无数据或非管理员。默认用户为 admin 可调审计。</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
