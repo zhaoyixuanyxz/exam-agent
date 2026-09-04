@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "python scripts/vercel_build.py",
+  "functions": {
+    "main.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{frontend/node_modules/**,frontend/src/**,frontend/public/**,docs/**,new/**,backend/tests/**,data/**,**/*.md,.git/**}"
+    }
+  }
+}

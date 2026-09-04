@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -6,6 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Always load backend/.env (not CWD), so uvicorn from any working directory still gets the key.
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _ENV_FILE = _BACKEND_DIR / ".env"
+
+
+def _running_serverless() -> bool:
+    if os.getenv("VERCEL", "").strip():
+        return True
+    return os.getenv("EXAM_AGENT_SERVERLESS", "").strip().lower() in ("1", "true", "yes")
 
 
 def _deepseek_key_from_backend_env_file() -> str | None:
@@ -23,6 +30,16 @@ def _deepseek_key_from_backend_env_file() -> str | None:
 
 
 def _default_data_dir() -> Path:
+    env_data = (os.getenv("DATA_DIR") or "").strip()
+    if env_data:
+        p = Path(env_data)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    # Vercel / serverless: only /tmp is writable across invocations on the same instance.
+    if _running_serverless():
+        p = Path("/tmp/exam-agent-data")
+        p.mkdir(parents=True, exist_ok=True)
+        return p
     return Path(__file__).resolve().parents[2] / "data"
 
 
@@ -62,6 +79,7 @@ class Settings(BaseSettings):
     practice_pdf_write_figure_diagnostics: bool = False
 
     # LaTeX 子系统：off Unicode；katex Playwright+CDN；tex pdflatex/xelatex+PyMuPDF
+    # Vercel 无 Chromium/TeX，强制保持 off（可用 env 覆盖仅限本地）。
     practice_pdf_latex_renderer: Literal["off", "katex", "tex"] = "off"
     practice_pdf_latex_timeout_sec: float = 25.0
     practice_pdf_latex_cache_dir: str = "cache/formula_png"

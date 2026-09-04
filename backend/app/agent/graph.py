@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import aiosqlite
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -12,6 +14,12 @@ from app.config import settings
 
 _checkpointer: AsyncSqliteSaver | MemorySaver | None = None
 _graph = None
+
+
+def _serverless() -> bool:
+    if os.getenv("VERCEL", "").strip():
+        return True
+    return os.getenv("EXAM_AGENT_SERVERLESS", "").strip().lower() in ("1", "true", "yes")
 
 
 def _llm() -> ChatOpenAI:
@@ -27,6 +35,11 @@ def _llm() -> ChatOpenAI:
 async def setup_checkpoint() -> None:
     """在 FastAPI lifespan 中调用：使用 AsyncSqliteSaver，支持 graph.astream / aget_state。"""
     global _checkpointer, _graph
+    # Vercel 无持久磁盘：用 MemorySaver（同实例内有效；跨冷启动不保留 graph 状态）。
+    if _serverless():
+        _checkpointer = MemorySaver()
+        _graph = None
+        return
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     path = settings.checkpoint_db_path.as_posix()
     try:

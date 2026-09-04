@@ -29,6 +29,18 @@
 
 ---
 
+## 给他人使用 · 方案 C（Vercel，打开链接即用）
+
+与栏目站相同思路：推 GitHub → Vercel 自动部署 → 同事只开 `*.vercel.app`。
+
+| 你做什么 | 对方做什么 |
+|----------|------------|
+| Neon/Supabase 配 `DATABASE_URL` + DeepSeek Key → Vercel Import 本仓库 | 打开网站即可 |
+
+📖 步骤与限制 → **[docs/VERCEL.md](docs/VERCEL.md)**（分支 `feat/vercel`）
+
+---
+
 ## 5 分钟上手（Windows）
 
 ### ① 准备两样东西
@@ -187,6 +199,7 @@ exam-agent/
 
 | 文档 | 适合谁 |
 |------|--------|
+| [docs/VERCEL.md](docs/VERCEL.md) | 管理员 — 推上 Vercel，他人打开即用 |
 | [docs/用户操作指南.md](docs/用户操作指南.md) | 老师 / 教研 — Tab 怎么用、常见坑 |
 | [docs/plan-a-shared-hosting.md](docs/plan-a-shared-hosting.md) | 管理员 — 本机托管（Tailscale） |
 | [docs/plan-b-vps-24x7.md](docs/plan-b-vps-24x7.md) | 管理员 — 云主机 24h、最低成本 |
