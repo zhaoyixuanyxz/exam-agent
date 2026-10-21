@@ -13,6 +13,23 @@ from app.models.schemas import (
 
 AskOne = Callable[[int, str], KnowledgeAnalysisResult]
 
+TIMEOUT_MESSAGE = "连接超时建议重试"
+
+
+class KnowledgeFillTimeout(Exception):
+    """The model call timed out while filling one question."""
+
+    def __init__(self, analysis: KnowledgeAnalysisResult):
+        self.analysis = analysis
+        super().__init__(TIMEOUT_MESSAGE)
+
+
+def is_connection_timeout(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    return "timeout" in name or "timed out" in text or "timeout" in text
+
+
 UNREADABLE_PAGE = "这一页无法识别"
 
 
@@ -83,5 +100,8 @@ def fill_missing_knowledge(
         if not missing:
             return analysis
         order = missing[0]
-        extra = ask_one(order, _stem_for(paper, order))
+        try:
+            extra = ask_one(order, _stem_for(paper, order))
+        except KnowledgeFillTimeout:
+            raise KnowledgeFillTimeout(analysis) from None
         analysis = merge_fill(analysis, extra, order)

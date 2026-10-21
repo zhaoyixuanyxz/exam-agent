@@ -72,3 +72,29 @@ def test_unreadable_page_is_detected_without_inventing_questions():
     assert is_unreadable_page("???") is True
     assert is_unreadable_page("1. 已知三角形ABC，求角A。") is False
     assert UNREADABLE_PAGE == "这一页无法识别"
+
+
+def test_timeout_stops_without_a_fake_point_and_uses_the_fixed_sentence():
+    from app.services.knowledge_fill import TIMEOUT_MESSAGE, KnowledgeFillTimeout, fill_missing_knowledge
+    from app.services.llm_errors import tool_error_user_text
+
+    paper = _paper()
+    analysis = KnowledgeAnalysisResult(
+        theme_title="主题",
+        knowledge_points=[],
+        mappings=[],
+    )
+
+    def ask_one(order: int, stem: str):
+        raise KnowledgeFillTimeout(analysis)
+
+    try:
+        fill_missing_knowledge(paper, analysis, ask_one)
+        raised = False
+    except KnowledgeFillTimeout as exc:
+        raised = True
+        assert exc.analysis.mappings == []
+    assert raised is True
+    assert tool_error_user_text("", KnowledgeFillTimeout(analysis)) == TIMEOUT_MESSAGE
+    assert TIMEOUT_MESSAGE == "连接超时建议重试"
+    assert "技术说明" not in TIMEOUT_MESSAGE

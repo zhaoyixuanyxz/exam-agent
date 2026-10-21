@@ -14,9 +14,20 @@ from app.db.models import Artifact, ExamPaper
 from app.db.sync_session import sync_session
 from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, StructuredPaper
 from app.services.export_markdown import build_knowledge_markdown
-from app.services.knowledge_fill import UNREADABLE_PAGE, is_unreadable_page
+from app.services.knowledge_fill import (
+    UNREADABLE_PAGE,
+    KnowledgeFillTimeout,
+    fill_missing_knowledge,
+    is_connection_timeout,
+    is_unreadable_page,
+)
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
-from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
+from app.services.paper_ai import (
+    analyze_knowledge,
+    analyze_one_question,
+    generate_practice_set,
+    structure_paper_text,
+)
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
 from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
@@ -374,6 +385,29 @@ def run_knowledge_analysis(paper_id: str) -> str:
             ka = analyze_knowledge(summary, p.alignment_json)
         except Exception as e:
             return tool_error_user_text("考点分析失败：", e)
+
+        def ask_one(order: int, stem: str) -> KnowledgeAnalysisResult:
+            try:
+                return analyze_one_question(order, stem, p.alignment_json or {})
+            except Exception as exc:
+                if is_connection_timeout(exc):
+                    raise KnowledgeFillTimeout(
+                        KnowledgeAnalysisResult(
+                            theme_title="",
+                            knowledge_points=[],
+                            mappings=[],
+                        )
+                    ) from exc
+                raise
+
+        try:
+            ka = fill_missing_knowledge(sp, ka, ask_one)
+        except KnowledgeFillTimeout as exc:
+            p.knowledge_analysis_json = exc.analysis.model_dump()
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("", exc)
+
         p.knowledge_analysis_json = ka.model_dump()
         conv_id = p.conversation_id
         md_path = export_dir_for_conversation(conv_id) / f"考点说明_{p.id}.md"
