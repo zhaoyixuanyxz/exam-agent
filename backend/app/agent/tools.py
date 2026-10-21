@@ -216,7 +216,8 @@ def _prepare_practice_call(
 
 def _draft_is_connection_timeout(exc: BaseException) -> bool:
     blob = f"{type(exc).__name__} {exc}".lower()
-    return "timeout" in blob or "timed out" in blob
+    markers = ("timeout", "timed out", "connection", "connecterror", "reset", "refused")
+    return any(marker in blob for marker in markers)
 
 
 def _stored_pdf_question_keys(session: Session, paper_id: str) -> list[str]:
