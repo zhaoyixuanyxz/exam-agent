@@ -84,20 +84,38 @@ def test_timeout_stops_without_a_fake_point_and_uses_the_fixed_sentence():
         knowledge_points=[],
         mappings=[],
     )
+    bogus = KnowledgeAnalysisResult(
+        theme_title="假",
+        knowledge_points=[
+            KnowledgePointItem(key="bogus_key", name="假考点", summary="假"),
+        ],
+        mappings=[
+            QuestionKnowledgeMapping(question_order=1, knowledge_point_key="bogus_key"),
+        ],
+    )
 
     def ask_one(order: int, stem: str):
-        raise KnowledgeFillTimeout(analysis)
+        raise KnowledgeFillTimeout(bogus)
 
     try:
         fill_missing_knowledge(paper, analysis, ask_one)
         raised = False
     except KnowledgeFillTimeout as exc:
         raised = True
-        assert exc.analysis.mappings == []
+        assert exc.analysis == analysis
+        assert "bogus_key" not in {m.knowledge_point_key for m in exc.analysis.mappings}
+        assert "bogus_key" not in {point.key for point in exc.analysis.knowledge_points}
     assert raised is True
     assert tool_error_user_text("", KnowledgeFillTimeout(analysis)) == TIMEOUT_MESSAGE
     assert TIMEOUT_MESSAGE == "连接超时建议重试"
     assert "技术说明" not in TIMEOUT_MESSAGE
+
+
+def test_is_connection_timeout_matches_timeout_errors_only():
+    from app.services.knowledge_fill import is_connection_timeout
+
+    assert is_connection_timeout(TimeoutError()) is True
+    assert is_connection_timeout(ValueError("nope")) is False
 
 
 def test_question_point_names_lists_every_name_on_that_question():
@@ -117,3 +135,50 @@ def test_question_point_names_lists_every_name_on_that_question():
     assert question_point_names(analysis) == [
         {"order_index": 1, "names": ["考点甲", "考点乙"]},
     ]
+
+
+def test_question_point_names_skips_a_key_with_no_chinese_name():
+    from app.services.knowledge_fill import question_point_names
+
+    analysis = KnowledgeAnalysisResult(
+        theme_title="主题",
+        knowledge_points=[
+            KnowledgePointItem(key="kp_a", name="考点甲", summary="甲"),
+        ],
+        mappings=[
+            QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_a"),
+            QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_raw_english"),
+            QuestionKnowledgeMapping(question_order=2, knowledge_point_key="kp_raw_english"),
+        ],
+    )
+    assert question_point_names(analysis) == [
+        {"order_index": 1, "names": ["考点甲"]},
+    ]
+    rendered = str(question_point_names(analysis))
+    assert "kp_raw_english" not in rendered
+
+
+def test_structure_exam_paper_unreadable_guard_does_not_structure():
+    from unittest.mock import MagicMock, patch
+
+    from app.agent.tools import structure_exam_paper
+
+    paper = MagicMock()
+    paper.raw_text = "???"
+    mock_session = MagicMock()
+    mock_session.get.return_value = paper
+
+    class _CM:
+        def __enter__(self):
+            return mock_session
+
+        def __exit__(self, *args):
+            return None
+
+    with (
+        patch("app.agent.tools.sync_session", return_value=_CM()),
+        patch("app.agent.tools.structure_paper_text") as structure,
+    ):
+        out = structure_exam_paper.invoke({"paper_id": "p1"})
+    assert out == "这一页无法识别"
+    structure.assert_not_called()

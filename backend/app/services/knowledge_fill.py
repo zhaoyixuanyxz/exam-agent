@@ -6,7 +6,6 @@ from collections.abc import Callable
 
 from app.models.schemas import (
     KnowledgeAnalysisResult,
-    KnowledgePointItem,
     QuestionKnowledgeMapping,
     StructuredPaper,
 )
@@ -95,6 +94,7 @@ def fill_missing_knowledge(
     analysis: KnowledgeAnalysisResult,
     ask_one: AskOne,
 ) -> KnowledgeAnalysisResult:
+    # The operator required re-asking until a point exists, so there is no attempt cap.
     while True:
         missing = missing_orders(paper, analysis)
         if not missing:
@@ -114,8 +114,10 @@ def question_point_names(analysis: KnowledgeAnalysisResult) -> list[dict]:
         key = (mapping.knowledge_point_key or "").strip()
         if not key:
             continue
-        by_order.setdefault(int(mapping.question_order), [])
-        by_order[int(mapping.question_order)].append(names.get(key, key))
+        name = (names.get(key) or "").strip()
+        if not name:
+            continue
+        by_order.setdefault(int(mapping.question_order), []).append(name)
     return [
         {"order_index": order, "names": by_order[order]}
         for order in sorted(by_order)

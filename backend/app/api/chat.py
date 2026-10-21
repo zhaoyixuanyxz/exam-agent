@@ -675,9 +675,12 @@ async def get_paper_structured(
 
     point_rows: list[dict] = []
     if p.knowledge_analysis_json:
-        point_rows = question_point_names(
-            KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
-        )
+        try:
+            point_rows = question_point_names(
+                KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
+            )
+        except Exception:
+            point_rows = []
     return {
         "paper_id": p.id,
         "display_name": p.display_name,

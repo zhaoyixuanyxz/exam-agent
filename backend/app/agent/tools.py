@@ -400,22 +400,31 @@ def run_knowledge_analysis(paper_id: str) -> str:
                     ) from exc
                 raise
 
+        def write_knowledge_markdown(saved: KnowledgeAnalysisResult) -> None:
+            md_path = export_dir_for_conversation(p.conversation_id) / f"考点说明_{p.id}.md"
+            md_path.write_text(
+                build_knowledge_markdown(saved, p.alignment_json),
+                encoding="utf-8",
+            )
+            p.knowledge_markdown_path = md_path.as_posix()
+
+        pre_fill = ka
         try:
             ka = fill_missing_knowledge(sp, ka, ask_one)
         except KnowledgeFillTimeout as exc:
             p.knowledge_analysis_json = exc.analysis.model_dump()
+            write_knowledge_markdown(exc.analysis)
             session.add(p)
             session.commit()
             return tool_error_user_text("", exc)
+        except Exception as exc:
+            p.knowledge_analysis_json = pre_fill.model_dump()
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("考点补全失败：", exc)
 
         p.knowledge_analysis_json = ka.model_dump()
-        conv_id = p.conversation_id
-        md_path = export_dir_for_conversation(conv_id) / f"考点说明_{p.id}.md"
-        md_path.write_text(
-            build_knowledge_markdown(ka, p.alignment_json),
-            encoding="utf-8",
-        )
-        p.knowledge_markdown_path = md_path.as_posix()
+        write_knowledge_markdown(ka)
         session.add(p)
         session.commit()
         return "成功：考点分析完成，说明文档已生成。"
