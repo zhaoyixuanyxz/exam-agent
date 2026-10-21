@@ -71,3 +71,11 @@ def practice_outcome(
     if needs_figure(point_name, stems) and not has_figure:
         return "retry"
     return "store"
+
+
+def generate_one_for_tool(key: str, name: str, *, draft, store) -> tuple[str, str]:
+    stems, figure_kinds, uses_paper_figure, payload = draft(key, name)
+    action = practice_outcome(name, stems, figure_kinds, uses_paper_figure)
+    if action == "store":
+        store(payload)
+    return action, key

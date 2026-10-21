@@ -44,3 +44,25 @@ def test_fill_skips_stored_points_and_timeout_keeps_them():
     assert tool_error_user_text("", PracticeFillTimeout(["kp_a"])) == TIMEOUT_MESSAGE
     assert TIMEOUT_MESSAGE == "连接超时建议重试"
     assert "技术说明" not in TIMEOUT_MESSAGE
+
+
+def test_generate_one_for_tool_does_not_store_a_retry(monkeypatch):
+    from app.services.practice_fill import generate_one_for_tool
+
+    stored: list[str] = []
+
+    def draft(key: str, name: str):
+        return (["画出函数图像"], ["none"], [False], {"key": key})
+
+    def store(payload: dict):
+        stored.append(payload["key"])
+
+    action, key = generate_one_for_tool(
+        "kp_plot",
+        "二次函数",
+        draft=draft,
+        store=store,
+    )
+    assert action == "retry"
+    assert stored == []
+    assert key == "kp_plot"
