@@ -74,8 +74,5 @@ def fill_missing_knowledge(
         if not missing:
             return analysis
         order = missing[0]
-        try:
-            extra = ask_one(order, _stem_for(paper, order))
-        except KnowledgeFillTimeout:
-            raise KnowledgeFillTimeout(analysis) from None
+        extra = ask_one(order, _stem_for(paper, order))
         analysis = merge_fill(analysis, extra, order)
