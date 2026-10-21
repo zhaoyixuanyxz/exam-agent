@@ -105,3 +105,18 @@ def fill_missing_knowledge(
         except KnowledgeFillTimeout:
             raise KnowledgeFillTimeout(analysis) from None
         analysis = merge_fill(analysis, extra, order)
+
+
+def question_point_names(analysis: KnowledgeAnalysisResult) -> list[dict]:
+    by_order: dict[int, list[str]] = {}
+    names = {point.key: point.name for point in analysis.knowledge_points}
+    for mapping in analysis.mappings:
+        key = (mapping.knowledge_point_key or "").strip()
+        if not key:
+            continue
+        by_order.setdefault(int(mapping.question_order), [])
+        by_order[int(mapping.question_order)].append(names.get(key, key))
+    return [
+        {"order_index": order, "names": by_order[order]}
+        for order in sorted(by_order)
+    ]

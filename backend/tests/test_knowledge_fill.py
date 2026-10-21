@@ -98,3 +98,22 @@ def test_timeout_stops_without_a_fake_point_and_uses_the_fixed_sentence():
     assert tool_error_user_text("", KnowledgeFillTimeout(analysis)) == TIMEOUT_MESSAGE
     assert TIMEOUT_MESSAGE == "连接超时建议重试"
     assert "技术说明" not in TIMEOUT_MESSAGE
+
+
+def test_question_point_names_lists_every_name_on_that_question():
+    from app.services.knowledge_fill import question_point_names
+
+    analysis = KnowledgeAnalysisResult(
+        theme_title="主题",
+        knowledge_points=[
+            KnowledgePointItem(key="kp_a", name="考点甲", summary="甲"),
+            KnowledgePointItem(key="kp_b", name="考点乙", summary="乙"),
+        ],
+        mappings=[
+            QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_a"),
+            QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_b"),
+        ],
+    )
+    assert question_point_names(analysis) == [
+        {"order_index": 1, "names": ["考点甲", "考点乙"]},
+    ]

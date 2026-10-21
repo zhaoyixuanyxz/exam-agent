@@ -670,6 +670,14 @@ async def get_paper_structured(
         raise HTTPException(404, "paper not found")
     st = effective_structured_status(p)
     summary = build_summary_from_parsed(p.parsed_json) if p.parsed_json else None
+    from app.models.schemas import KnowledgeAnalysisResult
+    from app.services.knowledge_fill import question_point_names
+
+    point_rows: list[dict] = []
+    if p.knowledge_analysis_json:
+        point_rows = question_point_names(
+            KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
+        )
     return {
         "paper_id": p.id,
         "display_name": p.display_name,
@@ -684,6 +692,7 @@ async def get_paper_structured(
         "parsed_json": p.parsed_json,
         "summary": summary,
         "anomalies": list_anomalies(p.parsed_json),
+        "question_knowledge": point_rows,
         "alignment_json": p.alignment_json,
     }
 
