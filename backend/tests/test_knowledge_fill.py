@@ -63,3 +63,12 @@ def test_fill_retries_only_the_empty_question_until_it_has_a_point():
     assert keys == ["kp_a"]
     keys2 = [m.knowledge_point_key for m in filled.mappings if m.question_order == 2]
     assert keys2 == ["kp_b"]
+
+
+def test_unreadable_page_is_detected_without_inventing_questions():
+    from app.services.knowledge_fill import UNREADABLE_PAGE, is_unreadable_page
+
+    assert is_unreadable_page("   \n  ") is True
+    assert is_unreadable_page("???") is True
+    assert is_unreadable_page("1. 已知三角形ABC，求角A。") is False
+    assert UNREADABLE_PAGE == "这一页无法识别"

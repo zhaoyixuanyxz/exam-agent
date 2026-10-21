@@ -13,6 +13,15 @@ from app.models.schemas import (
 
 AskOne = Callable[[int, str], KnowledgeAnalysisResult]
 
+UNREADABLE_PAGE = "这一页无法识别"
+
+
+def is_unreadable_page(raw_text: str) -> bool:
+    text = (raw_text or "").strip()
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    letters = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    return cjk < 4 and letters < 4
+
 
 def question_orders(paper: StructuredPaper) -> list[int]:
     orders: list[int] = []

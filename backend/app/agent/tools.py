@@ -14,6 +14,7 @@ from app.db.models import Artifact, ExamPaper
 from app.db.sync_session import sync_session
 from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, StructuredPaper
 from app.services.export_markdown import build_knowledge_markdown
+from app.services.knowledge_fill import UNREADABLE_PAGE, is_unreadable_page
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
 from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
@@ -298,6 +299,8 @@ def structure_exam_paper(paper_id: str) -> str:
         p = _get_paper(session, paper_id)
         if not p or not p.raw_text:
             return "错误：找不到试卷或尚未提取文本，请先上传 PDF/Word 或粘贴内容。"
+        if is_unreadable_page(p.raw_text):
+            return UNREADABLE_PAGE
         try:
             sp = structure_paper_text(p.raw_text)
         except Exception as e:
