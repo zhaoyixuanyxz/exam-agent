@@ -419,6 +419,7 @@ def run_knowledge_analysis(paper_id: str) -> str:
             return tool_error_user_text("", exc)
         except Exception as exc:
             p.knowledge_analysis_json = pre_fill.model_dump()
+            write_knowledge_markdown(pre_fill)
             session.add(p)
             session.commit()
             return tool_error_user_text("考点补全失败：", exc)
