@@ -83,6 +83,18 @@ def test_assistant_text_after_layout_timeout_none_when_success():
     assert assistant_text_after_layout_timeout(msgs) is None
 
 
+def test_assistant_text_after_layout_timeout_ignores_prior_turn():
+    msgs = [
+        HumanMessage(content="出练习"),
+        ToolMessage(content=TIMEOUT_MESSAGE, tool_call_id="1"),
+        AIMessage(content=TIMEOUT_MESSAGE),
+        HumanMessage(content="再试一次"),
+        ToolMessage(content="成功：练习已生成，请在界面「生成文件」中下载。", tool_call_id="2"),
+        AIMessage(content="练习卷已经在生成文件里了。"),
+    ]
+    assert assistant_text_after_layout_timeout(msgs) is None
+
+
 def _ka_two_points() -> dict:
     return {
         "theme_title": "测",

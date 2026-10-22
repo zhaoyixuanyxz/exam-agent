@@ -40,7 +40,18 @@ def run_layout_write(write_fn: Callable[[], None]) -> str | None:
 
 
 def assistant_text_after_layout_timeout(messages: Sequence[object]) -> str | None:
-    for msg in messages:
+    """Relay the timeout sentence only for the current user turn.
+
+    LangGraph checkpoints keep prior ToolMessages. A later successful turn must
+    not persist the previous timeout. With no human message, scan the whole list.
+    """
+    start = 0
+    for index, msg in enumerate(messages):
+        if getattr(msg, "type", None) == "human":
+            start = index + 1
+    for index, msg in enumerate(messages):
+        if index < start:
+            continue
         content = getattr(msg, "content", None)
         if isinstance(content, str) and content.strip() == TIMEOUT_MESSAGE:
             return TIMEOUT_MESSAGE
