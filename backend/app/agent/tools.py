@@ -14,6 +14,7 @@ from app.db.models import Artifact, ExamPaper
 from app.db.sync_session import sync_session
 from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, StructuredPaper
 from app.services.export_markdown import build_knowledge_markdown
+from app.services.layout_timeout import TIMEOUT_MESSAGE, user_text_for_layout_timeout
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
 from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
@@ -194,6 +195,9 @@ def _generate_chunk_practice_pdf_for_kp(
         practice.knowledge_point_key = kp.key
         practice.knowledge_point_name = kp.name
     except Exception as e:
+        timeout = user_text_for_layout_timeout(e)
+        if timeout:
+            return timeout
         return tool_error_user_text("出题失败：", e)
     out_dir = export_dir_for_conversation(paper.conversation_id)
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in kp.key)[:80]
@@ -250,6 +254,9 @@ def _generate_chunk_practice_pdf_for_kp(
                     diag_form_answers,
                 )
     except Exception as e:
+        timeout = user_text_for_layout_timeout(e)
+        if timeout:
+            return timeout
         return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
     paper_id = paper.id
     q_disp = f"{subject} · {kp.name} · 练习卷"
@@ -483,6 +490,8 @@ def generate_chunk_practice_pdfs_batch(
                 source_tool="generate_chunk_practice_pdfs_batch",
             )
             if err:
+                if err == TIMEOUT_MESSAGE:
+                    return TIMEOUT_MESSAGE
                 lines.append(f"「{kp.name}」{err}")
             else:
                 lines.append(f"「{kp.name}」练习与答案 PDF 已生成。")

@@ -1,7 +1,15 @@
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from sqlalchemy import select
 
+from app.agent.tools import generate_chunk_practice_pdf, generate_chunk_practice_pdfs_batch
+from app.db.models import Artifact, ExamPaper
+from app.db.sync_session import sync_session
+from app.main import app
 from app.services.layout_timeout import (
     TIMEOUT_MESSAGE,
     assistant_text_after_layout_timeout,
@@ -9,6 +17,7 @@ from app.services.layout_timeout import (
     run_layout_write,
     user_text_for_layout_timeout,
 )
+from app.services.storage import export_dir_for_conversation
 
 
 def test_timeout_message_is_exact_sentence_without_secrets():
@@ -72,3 +81,169 @@ def test_assistant_text_after_layout_timeout_none_when_success():
         AIMessage(content="练习卷已经在生成文件里了。"),
     ]
     assert assistant_text_after_layout_timeout(msgs) is None
+
+
+def _ka_two_points() -> dict:
+    return {
+        "theme_title": "测",
+        "knowledge_points": [
+            {"key": "kp_a", "name": "一次函数", "summary": "s", "book_chapter_hint": "通用"},
+            {"key": "kp_b", "name": "几何", "summary": "s", "book_chapter_hint": "通用"},
+        ],
+        "mappings": [{"question_order": 1, "knowledge_point_key": "kp_a"}],
+    }
+
+
+def _seed_paper_with_stored_practice(cid: str) -> tuple[str, Path]:
+    pdf = export_dir_for_conversation(cid) / "practice_kp_a.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4 stored-a")
+    with sync_session() as session:
+        paper = ExamPaper(
+            conversation_id=cid,
+            source_type="test",
+            knowledge_analysis_json=_ka_two_points(),
+        )
+        session.add(paper)
+        session.flush()
+        session.add(
+            Artifact(
+                paper_id=paper.id,
+                kind="pdf_question",
+                path=pdf.as_posix(),
+                knowledge_point_key="kp_a",
+                display_name="一次函数练习卷",
+            )
+        )
+        session.commit()
+        return paper.id, pdf
+
+
+def test_practice_timeout_returns_exact_sentence_keeps_stored_pdf():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        paper_id, pdf = _seed_paper_with_stored_practice(cid)
+        with patch(
+            "app.agent.tools.generate_practice_set",
+            side_effect=TimeoutError("timed out"),
+        ):
+            out = generate_chunk_practice_pdf.invoke(
+                {"paper_id": paper_id, "knowledge_point_key": "kp_b"}
+            )
+        assert out == TIMEOUT_MESSAGE
+        assert "技术说明" not in str(out)
+        assert pdf.is_file()
+        with sync_session() as session:
+            rows = list(
+                session.scalars(select(Artifact).where(Artifact.paper_id == paper_id))
+            )
+            assert len(rows) == 1
+            assert rows[0].knowledge_point_key == "kp_a"
+
+
+def test_practice_render_timeout_returns_sentence_not_font_copy():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        paper_id, pdf = _seed_paper_with_stored_practice(cid)
+        with (
+            patch(
+                "app.agent.tools.generate_practice_set",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.agent.tools.render_practice_pdf",
+                side_effect=ConnectionError("Connection refused"),
+            ),
+        ):
+            out = generate_chunk_practice_pdf.invoke(
+                {"paper_id": paper_id, "knowledge_point_key": "kp_b"}
+            )
+        assert out == TIMEOUT_MESSAGE
+        assert "楷体" not in str(out)
+        assert pdf.is_file()
+
+
+def test_practice_render_font_error_keeps_kaiti_copy():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        paper_id, _pdf = _seed_paper_with_stored_practice(cid)
+        with (
+            patch(
+                "app.agent.tools.generate_practice_set",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.agent.tools.render_practice_pdf",
+                side_effect=ValueError("KaiTi missing"),
+            ),
+        ):
+            out = generate_chunk_practice_pdf.invoke(
+                {"paper_id": paper_id, "knowledge_point_key": "kp_b"}
+            )
+        assert out != TIMEOUT_MESSAGE
+        assert "楷体" in str(out)
+
+
+def test_batch_timeout_returns_only_the_sentence_and_stops():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        paper_id, pdf = _seed_paper_with_stored_practice(cid)
+        calls: list[str] = []
+
+        def fake_gen(session, paper, kp, *args, **kwargs):
+            calls.append(kp.key)
+            if kp.key == "kp_a":
+                return None
+            return TIMEOUT_MESSAGE
+
+        items = json.dumps(
+            [
+                {"knowledge_point_key": "kp_a"},
+                {"knowledge_point_key": "kp_b"},
+            ]
+        )
+        with patch(
+            "app.agent.tools._generate_chunk_practice_pdf_for_kp",
+            side_effect=fake_gen,
+        ):
+            out = generate_chunk_practice_pdfs_batch.invoke(
+                {"paper_id": paper_id, "items_json": items}
+            )
+        assert out == TIMEOUT_MESSAGE
+        assert "批量结果" not in str(out)
+        assert calls == ["kp_a", "kp_b"]
+        assert pdf.is_file()
+
+
+def test_retry_unfinished_point_does_not_clear_stored_pdf():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        paper_id, pdf = _seed_paper_with_stored_practice(cid)
+        with patch(
+            "app.agent.tools.generate_practice_set",
+            side_effect=TimeoutError("timed out"),
+        ):
+            first = generate_chunk_practice_pdf.invoke(
+                {"paper_id": paper_id, "knowledge_point_key": "kp_b"}
+            )
+        assert first == TIMEOUT_MESSAGE
+        with (
+            patch(
+                "app.agent.tools.generate_practice_set",
+                return_value=MagicMock(),
+            ),
+            patch("app.agent.tools.render_practice_pdf"),
+            patch("app.agent.tools.render_answer_pdf"),
+        ):
+            second = generate_chunk_practice_pdf.invoke(
+                {"paper_id": paper_id, "knowledge_point_key": "kp_b"}
+            )
+        assert "成功" in str(second)
+        assert pdf.is_file()
+        with sync_session() as session:
+            rows = list(
+                session.scalars(select(Artifact).where(Artifact.paper_id == paper_id))
+            )
+            keys = {row.knowledge_point_key for row in rows}
+            assert "kp_a" in keys
+            assert "kp_b" in keys
