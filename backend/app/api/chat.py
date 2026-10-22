@@ -542,7 +542,8 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 if a.kind == "knowledge_pdf" and a.path and Path(a.path).is_file()
             ]
             if (
-                not pdf_arts
+                not p.knowledge_explanation_hidden
+                and not pdf_arts
                 and p.knowledge_markdown_path
                 and Path(p.knowledge_markdown_path).is_file()
             ):
@@ -579,7 +580,7 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 reverse=True,
             )
             for a in arts:
-                if a.kind == "knowledge_pdf" and not Path(a.path).is_file():
+                if not a.path or not Path(a.path).is_file():
                     continue
                 if a.path in seen:
                     continue
@@ -850,6 +851,52 @@ async def list_artifacts(
     if not conv:
         raise HTTPException(404)
     return {"items": _list_artifacts_sync(conversation_id)}
+
+
+@router.delete("/conversations/{conversation_id}/artifacts/{artifact_id}")
+async def delete_conversation_artifact(
+    conversation_id: str,
+    artifact_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    try:
+        _delete_conversation_artifact_sync(conversation_id, artifact_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "artifact not found") from None
+    except OSError:
+        return {"ok": False, "error": "删除失败，请稍后重试"}
+    return {"ok": True}
+
+
+def _delete_conversation_artifact_sync(conversation_id: str, artifact_id: str) -> None:
+    from app.services.artifact_delete import (
+        PDF_KINDS,
+        delete_stored_pdf,
+        hide_knowledge_explanation,
+    )
+
+    with sync_session() as s:
+        if artifact_id.startswith("md:"):
+            paper_id = artifact_id[3:]
+            paper = s.get(ExamPaper, paper_id)
+            if paper is None or paper.conversation_id != conversation_id:
+                raise FileNotFoundError
+            hide_knowledge_explanation(s, paper)
+            s.commit()
+            return
+        art = s.get(Artifact, artifact_id)
+        if art is None:
+            raise FileNotFoundError
+        paper = s.get(ExamPaper, art.paper_id)
+        if paper is None or paper.conversation_id != conversation_id:
+            raise FileNotFoundError
+        if art.kind not in PDF_KINDS:
+            raise FileNotFoundError
+        delete_stored_pdf(s, art)
+        s.commit()
 
 
 @router.get("/conversations/{conversation_id}/agent-run-active")
