@@ -70,6 +70,8 @@ def _artifact_url(abs_path: str) -> str:
 
 def _artifact_ui_category(kind: str) -> str:
     """产物中心分类：与 kind 区分，供前端分组展示。"""
+    if kind == "knowledge_pdf":
+        return "knowledge_markdown"
     if kind == "markdown":
         return "knowledge_markdown"
     if kind == "pdf_question":
@@ -534,7 +536,16 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
         items: list[dict] = []
         seen: set[str] = set()
         for p in papers:
-            if p.knowledge_markdown_path and Path(p.knowledge_markdown_path).is_file():
+            pdf_arts = [
+                a
+                for a in (p.artifacts or [])
+                if a.kind == "knowledge_pdf" and a.path and Path(a.path).is_file()
+            ]
+            if (
+                not pdf_arts
+                and p.knowledge_markdown_path
+                and Path(p.knowledge_markdown_path).is_file()
+            ):
                 mp = p.knowledge_markdown_path
                 if mp not in seen:
                     seen.add(mp)
@@ -568,6 +579,8 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 reverse=True,
             )
             for a in arts:
+                if a.kind == "knowledge_pdf" and not Path(a.path).is_file():
+                    continue
                 if a.path in seen:
                     continue
                 seen.add(a.path)
