@@ -418,6 +418,33 @@ export function Chat({
     setV2Tick((t) => t + 1);
   }, [conversationId, loadThread]);
 
+  const handleDeleteArtifact = useCallback(
+    async (art: StreamArtifact) => {
+      if (!art.id) return;
+      let r: Response;
+      try {
+        r = await fetch(
+          `${API}/api/conversations/${conversationId}/artifacts/${encodeURIComponent(art.id)}`,
+          { method: "DELETE" },
+        );
+      } catch {
+        alert("删除失败，请稍后重试");
+        return;
+      }
+      if (!r.ok) {
+        alert("删除失败，请稍后重试");
+        return;
+      }
+      const body = await r.json().catch(() => ({ ok: false }));
+      if (body.ok === false) {
+        alert("删除失败，请稍后重试");
+        return;
+      }
+      await loadThread(conversationId);
+    },
+    [conversationId, loadThread],
+  );
+
   const handleRetryUpload = useCallback(() => {
     setClientStreamErrorHint(null);
     fileInputRef.current?.click();
@@ -569,6 +596,7 @@ export function Chat({
         items={displayArtifacts}
         busy={busy}
         onRegenerateFromArtifact={handleRegenerateFromArtifact}
+        onDeleteArtifact={handleDeleteArtifact}
       />
 
       {splitTarget && (
