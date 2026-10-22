@@ -1,9 +1,13 @@
+from pathlib import Path
+
+import pymupdf
+
 from app.models.schemas import (
     KnowledgeAnalysisResult,
     KnowledgePointItem,
     QuestionKnowledgeMapping,
 )
-from app.services.knowledge_pdf import knowledge_pdf_blocks
+from app.services.knowledge_pdf import BLOCK_FILLS, knowledge_pdf_blocks, render_knowledge_pdf
 
 
 def _ka() -> KnowledgeAnalysisResult:
@@ -28,3 +32,39 @@ def test_knowledge_pdf_blocks_groups_questions_under_each_point():
     assert blocks["points"][0]["summary"] == "配方法求顶点"
     assert blocks["points"][0]["orders"] == [1, 2]
     assert blocks["points"][1]["orders"] == [3]
+
+
+def _fill_in_palette(fill) -> bool:
+    if not fill:
+        return False
+    channels = fill[:3]
+    if max(channels) <= 1:
+        return any(
+            all(abs(channel - expected / 255) <= 0.02 for channel, expected in zip(channels, rgb))
+            for rgb in BLOCK_FILLS
+        )
+    rounded = tuple(round(channel) for channel in channels)
+    return rounded in BLOCK_FILLS
+
+
+def test_render_knowledge_pdf_has_title_blocks_and_color(tmp_path: Path):
+    out = tmp_path / "考点说明.pdf"
+    payload = knowledge_pdf_blocks(
+        _ka(),
+        {"grade_min": "初三", "grade_max": "初三", "subject": "数学"},
+    )
+    render_knowledge_pdf(payload, out)
+    raw = out.read_bytes()
+    assert raw.startswith(b"%PDF-")
+    doc = pymupdf.open(out)
+    text = "".join(page.get_text() for page in doc)
+    drawings = [d for page in doc for d in page.get_drawings()]
+    doc.close()
+    assert "初三" in text
+    assert "数学" in text
+    assert "二次函数综合" in text
+    assert "顶点式" in text
+    assert "图像性质" in text
+    assert "第 1 题" in text
+    assert "顶点式" in text and "图像性质" in text
+    assert any(_fill_in_palette(drawing.get("fill")) for drawing in drawings)
