@@ -38,6 +38,51 @@ def test_read_sparse_page_retries_then_merges():
     assert calls["n"] == 3
 
 
+def test_read_sparse_page_retries_timeout_error():
+    calls = {"n": 0}
+
+    def once() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("timed out")
+        return "第3题 函数图像"
+
+    assert read_sparse_page(once) == "第3题 函数图像"
+    assert calls["n"] == 3
+
+
+def test_read_sparse_page_reraises_missing_api_key_without_extra_loops():
+    calls = {"n": 0}
+
+    def once() -> str:
+        calls["n"] += 1
+        raise ValueError("DEEPSEEK_API_KEY_MISSING")
+
+    try:
+        read_sparse_page(once)
+    except ValueError as exc:
+        assert str(exc) == "DEEPSEEK_API_KEY_MISSING"
+    else:
+        raise AssertionError("expected ValueError")
+    assert calls["n"] == 1
+
+
+def test_read_sparse_page_reraises_model_without_image_support():
+    calls = {"n": 0}
+
+    def once() -> str:
+        calls["n"] += 1
+        raise RuntimeError("This model does not support image input")
+
+    try:
+        read_sparse_page(once)
+    except RuntimeError as exc:
+        assert "does not support image" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+    assert calls["n"] == 1
+
+
 def test_read_sparse_page_scraps_after_three_failures():
     calls = {"n": 0}
 

@@ -269,9 +269,13 @@ async def chat_stream(
             dest.write_bytes(raw)
             dests.append(dest)
         try:
-            text = extract_exam_text(dests, read_image_text=read_image_text)
+            text = await asyncio.to_thread(
+                extract_exam_text, dests, read_image_text=read_image_text
+            )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(400, f"解析失败: {e!s}") from e
         pid = str(uuid.uuid4())
         dname = Path(uploads[0].filename or "file").stem or "上传文件"
         if len(dname) > 500:
@@ -282,12 +286,12 @@ async def chat_stream(
         elif ".docx" in suffixes:
             st = "docx"
         else:
-            st = "pdf"
+            st = "image"
         session.add(
             ExamPaper(
                 id=pid,
                 conversation_id=conversation_id,
-                raw_path=dests[0].as_posix(),
+                raw_path="\n".join(dest.as_posix() for dest in dests),
                 source_type=st,
                 raw_text=text,
                 display_name=dname,

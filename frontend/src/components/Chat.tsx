@@ -233,7 +233,7 @@ export function Chat({
   );
 
   const splitTarget = useMemo(() => {
-    const pdf = papers.filter((x) => x.source_type === "pdf" && x.raw_path);
+    const pdf = papers.filter((x) => (x.raw_path ?? "").trim().toLowerCase().endsWith(".pdf"));
     if (!pdf.length) return null;
     if (targetPaperId) {
       const byTarget = pdf.find((x) => x.id === targetPaperId);

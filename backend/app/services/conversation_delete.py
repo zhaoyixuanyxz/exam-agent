@@ -48,7 +48,10 @@ def collect_conversation_file_paths(conversation_id: str) -> tuple[set[Path], Pa
         )
         for p in papers:
             if p.raw_path:
-                paths.add(Path(p.raw_path))
+                for line in p.raw_path.splitlines():
+                    cleaned = line.strip()
+                    if cleaned:
+                        paths.add(Path(cleaned))
             if p.knowledge_markdown_path:
                 paths.add(Path(p.knowledge_markdown_path))
             for a in p.artifacts:
