@@ -94,3 +94,57 @@ def test_store_skips_existing_and_timeout_keeps_it():
     assert tool_error_user_text("", KnowledgePdfTimeout(stored=False)) == TIMEOUT_MESSAGE
     assert TIMEOUT_MESSAGE == "连接超时建议重试"
     assert "技术说明" not in TIMEOUT_MESSAGE
+
+
+def test_artifact_category_for_knowledge_pdf_is_the_explanation_slot():
+    from app.api.chat import _artifact_ui_category
+
+    assert _artifact_ui_category("knowledge_pdf") == "knowledge_markdown"
+    assert _artifact_ui_category("markdown") == "knowledge_markdown"
+
+
+def test_list_artifacts_sync_prefers_knowledge_pdf_over_markdown(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from app.api.chat import _list_artifacts_sync
+    from app.db.models import Artifact, ExamPaper
+    from app.db.sync_session import sync_session
+    from app.main import app
+
+    md = tmp_path / "考点说明.md"
+    md.write_text("# 考点\n", encoding="utf-8")
+    pdf = tmp_path / "考点说明.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+    with TestClient(app) as client:
+        r = client.post("/api/conversations")
+        cid = r.json()["conversation_id"]
+        with sync_session() as s:
+            p = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                knowledge_markdown_path=md.as_posix(),
+            )
+            s.add(p)
+            s.commit()
+            s.add(
+                Artifact(
+                    paper_id=p.id,
+                    kind="knowledge_pdf",
+                    display_name="考点说明",
+                    path=pdf.as_posix(),
+                    source_tool="run_knowledge_analysis",
+                )
+            )
+            s.commit()
+
+        items = _list_artifacts_sync(cid)
+
+    slot = [i for i in items if i["category"] == "knowledge_markdown"]
+    assert len(slot) == 1
+    assert slot[0]["path"].endswith(".pdf")
+    assert slot[0]["kind"] == "knowledge_pdf"
+    assert not any(
+        i["category"] == "knowledge_markdown" and str(i["path"]).endswith(".md")
+        for i in items
+    )
