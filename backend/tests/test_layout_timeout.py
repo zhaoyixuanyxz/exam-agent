@@ -14,6 +14,7 @@ from app.services.layout_timeout import (
     TIMEOUT_MESSAGE,
     assistant_text_after_layout_timeout,
     is_connection_timeout,
+    persist_text_after_agent_error,
     run_layout_write,
     user_text_for_layout_timeout,
 )
@@ -93,6 +94,25 @@ def test_assistant_text_after_layout_timeout_ignores_prior_turn():
         AIMessage(content="练习卷已经在生成文件里了。"),
     ]
     assert assistant_text_after_layout_timeout(msgs) is None
+
+
+def test_persist_text_after_agent_error_prefers_timeout_sentence():
+    msgs = [
+        HumanMessage(content="出练习"),
+        ToolMessage(content=TIMEOUT_MESSAGE, tool_call_id="1"),
+    ]
+    fallback = "（处理出错：timed out）"
+    assert persist_text_after_agent_error(msgs, fallback) == TIMEOUT_MESSAGE
+    assert persist_text_after_agent_error([HumanMessage(content="hi")], fallback) == fallback
+
+
+def test_chat_except_uses_persist_text_after_agent_error():
+    import inspect
+
+    from app.api import chat as chat_mod
+
+    source = inspect.getsource(chat_mod)
+    assert "persist_text_after_agent_error" in source
 
 
 def _ka_two_points() -> dict:

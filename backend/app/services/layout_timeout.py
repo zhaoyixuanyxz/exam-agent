@@ -56,3 +56,8 @@ def assistant_text_after_layout_timeout(messages: Sequence[object]) -> str | Non
         if isinstance(content, str) and content.strip() == TIMEOUT_MESSAGE:
             return TIMEOUT_MESSAGE
     return None
+
+
+def persist_text_after_agent_error(messages, fallback: str) -> str:
+    text = assistant_text_after_layout_timeout(messages)
+    return text if text else fallback
