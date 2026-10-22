@@ -141,6 +141,17 @@ def _merge_practice_generation(
     return n, uof, incf, diff, allowed, om
 
 
+def _artifact_file_present(paper: ExamPaper, kind: str, kp_key: str) -> bool:
+    for a in paper.artifacts or []:
+        if a.kind != kind:
+            continue
+        if (a.knowledge_point_key or "") != kp_key:
+            continue
+        if a.path and Path(a.path).is_file():
+            return True
+    return False
+
+
 def _generate_chunk_practice_pdf_for_kp(
     session: Session,
     paper: ExamPaper,
@@ -199,6 +210,11 @@ def _generate_chunk_practice_pdf_for_kp(
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in kp.key)[:80]
     q_path = out_dir / f"practice_{safe}.pdf"
     a_path = out_dir / f"practice_{safe}_answers.pdf"
+    q_exists = _artifact_file_present(paper, "pdf_question", kp.key)
+    a_exists = _artifact_file_present(paper, "pdf_answer", kp.key)
+    fill_only_missing = q_exists != a_exists
+    skip_q = bool(fill_only_missing and q_exists)
+    skip_a = bool(fill_only_missing and a_exists)
     title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
     diag_practice: list[FigureEmbedRecord] = []
     diag_answers: list[FigureEmbedRecord] = []
@@ -207,18 +223,19 @@ def _generate_chunk_practice_pdf_for_kp(
     write_diag = bool(settings.practice_pdf_write_figure_diagnostics)
     write_formula_diag = bool(settings.practice_pdf_write_formula_diagnostics)
     try:
-        render_practice_pdf(
-            practice,
-            q_path,
-            title=title,
-            include_answers=False,
-            include_figures=include_figures,
-            use_original_figures=use_original_figures,
-            order_index_to_paper_paths=order_map if use_original_figures else None,
-            collect_figure_diagnostics=diag_practice if write_diag else None,
-            collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
-        )
-        if om == "questions_and_answers":
+        if not skip_q:
+            render_practice_pdf(
+                practice,
+                q_path,
+                title=title,
+                include_answers=False,
+                include_figures=include_figures,
+                use_original_figures=use_original_figures,
+                order_index_to_paper_paths=order_map if use_original_figures else None,
+                collect_figure_diagnostics=diag_practice if write_diag else None,
+                collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
+            )
+        if om == "questions_and_answers" and not skip_a:
             render_answer_pdf(
                 practice,
                 a_path,
@@ -269,8 +286,10 @@ def _generate_chunk_practice_pdf_for_kp(
     }
     if config_extra:
         base_snap = {**base_snap, **config_extra}
-    rows: list[tuple[str, Path, str]] = [("pdf_question", q_path, q_disp)]
-    if om == "questions_and_answers":
+    rows: list[tuple[str, Path, str]] = []
+    if not skip_q:
+        rows.append(("pdf_question", q_path, q_disp))
+    if om == "questions_and_answers" and not skip_a:
         rows.append(("pdf_answer", a_path, a_disp))
     for kind, path, disp in rows:
         session.add(
@@ -380,6 +399,7 @@ def run_knowledge_analysis(paper_id: str) -> str:
         )
         p.knowledge_markdown_path = md_path.as_posix()
         session.add(p)
+        p.knowledge_explanation_hidden = False
         session.commit()
         return "成功：考点分析完成，说明文档已生成。"
 

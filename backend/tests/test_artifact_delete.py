@@ -1,11 +1,14 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.agent.tools import _generate_chunk_practice_pdf_for_kp
 from app.api.chat import _list_artifacts_sync
 from app.db.models import Artifact, ExamPaper, QuestionAsset
 from app.db.sync_session import sync_session
 from app.main import app
+from app.models.schemas import KnowledgePointItem
 from app.services.artifact_delete import PDF_KINDS, delete_stored_pdf, hide_knowledge_explanation
 from app.services.storage import export_dir_for_conversation
 
@@ -189,3 +192,125 @@ def test_delete_markdown_slot_hides_without_unlinking():
             for i in client.get(f"/api/conversations/{cid}/artifacts").json()["items"]
         ]
         assert "markdown" not in kinds
+
+
+def test_practice_regenerate_fills_only_missing_kind(tmp_path: Path):
+    q_pdf = tmp_path / "practice_kp_a.pdf"
+    q_pdf.write_bytes(b"%PDF-1.4 question")
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                knowledge_analysis_json={
+                    "theme_title": "t",
+                    "knowledge_points": [
+                        {
+                            "key": "kp_a",
+                            "name": "顶点式",
+                            "summary": "s",
+                            "book_chapter_hint": "",
+                        }
+                    ],
+                    "mappings": [],
+                },
+                alignment_json={"grade_min": "初三", "grade_max": "初三", "subject": "数学"},
+            )
+            s.add(paper)
+            s.flush()
+            s.add(
+                Artifact(
+                    paper_id=paper.id,
+                    kind="pdf_question",
+                    path=q_pdf.as_posix(),
+                    knowledge_point_key="kp_a",
+                )
+            )
+            s.commit()
+            paper_id = paper.id
+        calls = {"q": 0, "a": 0}
+
+        def fake_q(*_a, **_k):
+            calls["q"] += 1
+
+        def fake_a(*_a, **_k):
+            calls["a"] += 1
+            Path(_a[1]).write_bytes(b"%PDF-1.4 answers")
+
+        with (
+            patch("app.agent.tools.generate_practice_set") as gen,
+            patch("app.agent.tools.render_practice_pdf", side_effect=fake_q),
+            patch("app.agent.tools.render_answer_pdf", side_effect=fake_a),
+            patch("app.agent.tools.export_dir_for_conversation", return_value=tmp_path),
+        ):
+            gen.return_value = type("P", (), {"knowledge_point_key": "", "knowledge_point_name": ""})()
+            with sync_session() as s:
+                paper = s.get(ExamPaper, paper_id)
+                kp = KnowledgePointItem(key="kp_a", name="顶点式", summary="s", book_chapter_hint="")
+                err = _generate_chunk_practice_pdf_for_kp(
+                    s,
+                    paper,
+                    kp,
+                    10,
+                    use_original_figures=False,
+                    include_figures=True,
+                    difficulty="medium",
+                    question_types_json="[]",
+                    output_mode="questions_and_answers",
+                )
+                assert err is None
+                s.commit()
+        assert calls["q"] == 0
+        assert calls["a"] == 1
+        assert q_pdf.read_bytes() == b"%PDF-1.4 question"
+
+
+def test_run_knowledge_analysis_clears_hidden_flag(monkeypatch):
+    from app.agent.tools import run_knowledge_analysis
+    from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem
+
+    def fake_analyze(_summary, _align):
+        return KnowledgeAnalysisResult(
+            theme_title="二次函数",
+            knowledge_points=[
+                KnowledgePointItem(key="kp_a", name="顶点式", summary="配方法求顶点", book_chapter_hint=""),
+            ],
+            mappings=[],
+        )
+
+    monkeypatch.setattr("app.agent.tools.analyze_knowledge", fake_analyze)
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                parsed_json={
+                    "title": "卷",
+                    "sections": [
+                        {
+                            "title": "一",
+                            "questions": [
+                                {
+                                    "order_index": 1,
+                                    "qtype": "填空",
+                                    "stem": "题",
+                                    "options": [],
+                                    "blocks": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                structured_confirm_status="confirmed",
+                alignment_json={"grade_min": "初三", "grade_max": "初三", "subject": "数学"},
+                knowledge_explanation_hidden=True,
+            )
+            s.add(paper)
+            s.commit()
+            paper_id = paper.id
+        msg = run_knowledge_analysis.invoke({"paper_id": paper_id})
+        assert str(msg).startswith("成功")
+        with sync_session() as s:
+            assert s.get(ExamPaper, paper_id).knowledge_explanation_hidden is False
