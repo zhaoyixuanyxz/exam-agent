@@ -74,6 +74,8 @@ def _artifact_url(abs_path: str) -> str:
 
 def _artifact_ui_category(kind: str) -> str:
     """产物中心分类：与 kind 区分，供前端分组展示。"""
+    if kind == "knowledge_pdf":
+        return "knowledge_markdown"
     if kind == "markdown":
         return "knowledge_markdown"
     if kind == "pdf_question":
@@ -555,7 +557,17 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
         items: list[dict] = []
         seen: set[str] = set()
         for p in papers:
-            if p.knowledge_markdown_path and Path(p.knowledge_markdown_path).is_file():
+            pdf_arts = [
+                a
+                for a in (p.artifacts or [])
+                if a.kind == "knowledge_pdf" and a.path and Path(a.path).is_file()
+            ]
+            if (
+                not p.knowledge_explanation_hidden
+                and not pdf_arts
+                and p.knowledge_markdown_path
+                and Path(p.knowledge_markdown_path).is_file()
+            ):
                 mp = p.knowledge_markdown_path
                 if mp not in seen:
                     seen.add(mp)
@@ -589,6 +601,8 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 reverse=True,
             )
             for a in arts:
+                if not a.path or not Path(a.path).is_file():
+                    continue
                 if a.path in seen:
                     continue
                 seen.add(a.path)
@@ -691,6 +705,17 @@ async def get_paper_structured(
         raise HTTPException(404, "paper not found")
     st = effective_structured_status(p)
     summary = build_summary_from_parsed(p.parsed_json) if p.parsed_json else None
+    from app.models.schemas import KnowledgeAnalysisResult
+    from app.services.knowledge_fill import question_point_names
+
+    point_rows: list[dict] = []
+    if p.knowledge_analysis_json:
+        try:
+            point_rows = question_point_names(
+                KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
+            )
+        except Exception:
+            point_rows = []
     return {
         "paper_id": p.id,
         "display_name": p.display_name,
@@ -705,6 +730,7 @@ async def get_paper_structured(
         "parsed_json": p.parsed_json,
         "summary": summary,
         "anomalies": list_anomalies(p.parsed_json),
+        "question_knowledge": point_rows,
         "alignment_json": p.alignment_json,
     }
 
@@ -846,6 +872,52 @@ async def list_artifacts(
     if not conv:
         raise HTTPException(404)
     return {"items": _list_artifacts_sync(conversation_id)}
+
+
+@router.delete("/conversations/{conversation_id}/artifacts/{artifact_id}")
+async def delete_conversation_artifact(
+    conversation_id: str,
+    artifact_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    try:
+        _delete_conversation_artifact_sync(conversation_id, artifact_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "artifact not found") from None
+    except OSError:
+        return {"ok": False, "error": "删除失败，请稍后重试"}
+    return {"ok": True}
+
+
+def _delete_conversation_artifact_sync(conversation_id: str, artifact_id: str) -> None:
+    from app.services.artifact_delete import (
+        PDF_KINDS,
+        delete_stored_pdf,
+        hide_knowledge_explanation,
+    )
+
+    with sync_session() as s:
+        if artifact_id.startswith("md:"):
+            paper_id = artifact_id[3:]
+            paper = s.get(ExamPaper, paper_id)
+            if paper is None or paper.conversation_id != conversation_id:
+                raise FileNotFoundError
+            hide_knowledge_explanation(s, paper)
+            s.commit()
+            return
+        art = s.get(Artifact, artifact_id)
+        if art is None:
+            raise FileNotFoundError
+        paper = s.get(ExamPaper, art.paper_id)
+        if paper is None or paper.conversation_id != conversation_id:
+            raise FileNotFoundError
+        if art.kind not in PDF_KINDS:
+            raise FileNotFoundError
+        delete_stored_pdf(s, art)
+        s.commit()
 
 
 @router.get("/conversations/{conversation_id}/agent-run-active")

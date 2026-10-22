@@ -5,22 +5,52 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from langchain_core.tools import tool
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Artifact, ExamPaper
 from app.db.sync_session import sync_session
-from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem, StructuredPaper
+from app.models.schemas import (
+    KnowledgeAnalysisResult,
+    KnowledgePointItem,
+    PracticeSet,
+    StructuredPaper,
+)
 from app.services.export_markdown import build_knowledge_markdown
+from app.services.knowledge_fill import (
+    UNREADABLE_PAGE,
+    KnowledgeFillTimeout,
+    fill_missing_knowledge,
+    is_connection_timeout,
+    is_unreadable_page,
+)
+from app.services.knowledge_pdf import (
+    KnowledgePdfTimeout,
+    knowledge_pdf_blocks,
+    render_knowledge_pdf,
+    store_knowledge_pdf,
+)
 from app.services.layout_timeout import TIMEOUT_MESSAGE, user_text_for_layout_timeout
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
-from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
+from app.services.paper_ai import (
+    analyze_knowledge,
+    analyze_one_question,
+    generate_practice_set,
+    structure_paper_text,
+)
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
 from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
     write_figure_embed_records_json,
+)
+from app.services.practice_fill import (
+    PracticeFillTimeout,
+    fill_practice_pdfs,
+    generate_one_for_tool,
 )
 from app.services.practice_formula_diagnostics import (
     FormulaRenderRecord,
@@ -29,9 +59,62 @@ from app.services.practice_formula_diagnostics import (
 from app.services.practice_paper_figures import collect_order_index_to_image_paths
 from app.services.storage import export_dir_for_conversation
 
+_KNOWLEDGE_PDF_TIMEOUT_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection",
+    "connecterror",
+    "reset",
+    "refused",
+)
+
 
 def _get_paper(session: Session, paper_id: str) -> ExamPaper | None:
     return session.get(ExamPaper, paper_id)
+
+
+def _is_knowledge_pdf_timeout(exc: BaseException) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _KNOWLEDGE_PDF_TIMEOUT_MARKERS)
+
+
+def _unlink_partial_knowledge_pdf(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _knowledge_pdf_already_stored(artifacts: list[Artifact] | None) -> bool:
+    return any(
+        a.kind == "knowledge_pdf" and bool(a.path) and Path(a.path).is_file()
+        for a in (artifacts or [])
+    )
+
+
+def _replace_knowledge_pdf_artifact(
+    session: Session, paper: ExamPaper, pdf_path: Path
+) -> None:
+    existing = [a for a in (paper.artifacts or []) if a.kind == "knowledge_pdf"]
+    primary = existing[0] if existing else None
+    if primary is not None:
+        primary.path = pdf_path.as_posix()
+        primary.display_name = "考点说明"
+        primary.source_tool = "run_knowledge_analysis"
+        session.add(primary)
+        for extra in existing[1:]:
+            session.delete(extra)
+        return
+    session.add(
+        Artifact(
+            paper_id=paper.id,
+            kind="knowledge_pdf",
+            display_name="考点说明",
+            path=pdf_path.as_posix(),
+            source_tool="run_knowledge_analysis",
+        )
+    )
 
 
 def _normalize_kp_query(raw: str) -> str:
@@ -142,21 +225,41 @@ def _merge_practice_generation(
     return n, uof, incf, diff, allowed, om
 
 
-def _generate_chunk_practice_pdf_for_kp(
-    session: Session,
+def _artifact_file_present(paper: ExamPaper, kind: str, kp_key: str) -> bool:
+    for a in paper.artifacts or []:
+        if a.kind != kind:
+            continue
+        if (a.knowledge_point_key or "") != kp_key:
+            continue
+        if a.path and Path(a.path).is_file():
+            return True
+    return False
+
+
+class _PracticeCall(NamedTuple):
+    align: dict
+    grade: str
+    subject: str
+    n: int
+    use_original_figures: bool
+    include_figures: bool
+    diff: str
+    allowed: list[str] | None
+    om: str
+    order_map: dict[int, list[str]]
+    original_figure_hint: str | None
+
+
+def _prepare_practice_call(
     paper: ExamPaper,
-    kp: KnowledgePointItem,
-    question_count: int,
     *,
+    question_count: int,
     use_original_figures: bool,
     include_figures: bool,
-    difficulty: str = "medium",
-    question_types_json: str = "[]",
-    output_mode: str = "questions_and_answers",
-    source_tool: str = "generate_chunk_practice_pdf",
-    config_extra: dict | None = None,
-) -> str | None:
-    """生成单考点练习与答案 PDF 并入库；成功返回 None，失败返回简短错误文案。"""
+    difficulty: str,
+    question_types_json: str,
+    output_mode: str,
+) -> _PracticeCall:
     align = paper.alignment_json or {}
     grade = f"{align.get('grade_min', '?')}—{align.get('grade_max', '?')}"
     subject = str(align.get("subject", "数学"))
@@ -179,30 +282,73 @@ def _generate_chunk_practice_pdf_for_kp(
                 f"  第{k}题: " + "；".join(paths[:12])
                 for k, paths in sorted(order_map.items())
             )
-    try:
-        practice = generate_practice_set(
-            kp.name,
-            kp.summary,
-            subject,
-            grade,
-            n=n,
-            use_original_figures=use_original_figures,
-            include_figures=include_figures,
-            original_figure_hint=original_figure_hint,
-            difficulty=diff,
-            allowed_qtypes=allowed,
+    return _PracticeCall(
+        align=align,
+        grade=grade,
+        subject=subject,
+        n=n,
+        use_original_figures=use_original_figures,
+        include_figures=include_figures,
+        diff=diff,
+        allowed=allowed,
+        om=om,
+        order_map=order_map,
+        original_figure_hint=original_figure_hint,
+    )
+
+
+def _draft_is_connection_timeout(exc: BaseException) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    markers = ("timeout", "timed out", "connection", "connecterror", "reset", "refused")
+    return any(marker in blob for marker in markers)
+
+
+def _stored_pdf_question_keys(session: Session, paper_id: str) -> list[str]:
+    rows = session.scalars(
+        select(Artifact.knowledge_point_key).where(
+            Artifact.paper_id == paper_id,
+            Artifact.kind == "pdf_question",
         )
-        practice.knowledge_point_key = kp.key
-        practice.knowledge_point_name = kp.name
-    except Exception as e:
-        timeout = user_text_for_layout_timeout(e)
-        if timeout:
-            return timeout
-        return tool_error_user_text("出题失败：", e)
+    ).all()
+    keys: list[str] = []
+    for raw in rows:
+        if raw is None:
+            continue
+        key = str(raw)
+        if not key.strip():
+            continue
+        keys.append(key)
+    return keys
+
+
+def store_drafted_practice(
+    session: Session,
+    paper: ExamPaper,
+    kp: KnowledgePointItem,
+    practice: PracticeSet,
+    *,
+    n: int,
+    use_original_figures: bool,
+    include_figures: bool,
+    diff: str,
+    allowed: list[str] | None,
+    om: str,
+    order_map: dict[int, list[str]],
+    align: dict,
+    subject: str,
+    source_tool: str,
+    config_extra: dict | None,
+) -> str | None:
+    """渲染练习 PDF 并写入 Artifact；成功返回 None，失败返回错误文案。"""
     out_dir = export_dir_for_conversation(paper.conversation_id)
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in kp.key)[:80]
     q_path = out_dir / f"practice_{safe}.pdf"
     a_path = out_dir / f"practice_{safe}_answers.pdf"
+    q_exists = _artifact_file_present(paper, "pdf_question", kp.key)
+    a_exists = _artifact_file_present(paper, "pdf_answer", kp.key)
+    fill_only_missing = q_exists != a_exists and om == "questions_and_answers"
+    skip_q = bool(fill_only_missing and q_exists)
+    skip_a = bool(fill_only_missing and a_exists)
     title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
     diag_practice: list[FigureEmbedRecord] = []
     diag_answers: list[FigureEmbedRecord] = []
@@ -211,18 +357,19 @@ def _generate_chunk_practice_pdf_for_kp(
     write_diag = bool(settings.practice_pdf_write_figure_diagnostics)
     write_formula_diag = bool(settings.practice_pdf_write_formula_diagnostics)
     try:
-        render_practice_pdf(
-            practice,
-            q_path,
-            title=title,
-            include_answers=False,
-            include_figures=include_figures,
-            use_original_figures=use_original_figures,
-            order_index_to_paper_paths=order_map if use_original_figures else None,
-            collect_figure_diagnostics=diag_practice if write_diag else None,
-            collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
-        )
-        if om == "questions_and_answers":
+        if not skip_q:
+            render_practice_pdf(
+                practice,
+                q_path,
+                title=title,
+                include_answers=False,
+                include_figures=include_figures,
+                use_original_figures=use_original_figures,
+                order_index_to_paper_paths=order_map if use_original_figures else None,
+                collect_figure_diagnostics=diag_practice if write_diag else None,
+                collect_formula_diagnostics=diag_form_practice if write_formula_diag else None,
+            )
+        if om == "questions_and_answers" and not skip_a:
             render_answer_pdf(
                 practice,
                 a_path,
@@ -276,8 +423,10 @@ def _generate_chunk_practice_pdf_for_kp(
     }
     if config_extra:
         base_snap = {**base_snap, **config_extra}
-    rows: list[tuple[str, Path, str]] = [("pdf_question", q_path, q_disp)]
-    if om == "questions_and_answers":
+    rows: list[tuple[str, Path, str]] = []
+    if not skip_q:
+        rows.append(("pdf_question", q_path, q_disp))
+    if om == "questions_and_answers" and not skip_a:
         rows.append(("pdf_answer", a_path, a_disp))
     for kind, path, disp in rows:
         session.add(
@@ -296,6 +445,74 @@ def _generate_chunk_practice_pdf_for_kp(
     return None
 
 
+def _draft_practice_set(kp: KnowledgePointItem, ctx: _PracticeCall) -> PracticeSet:
+    practice = generate_practice_set(
+        kp.name,
+        kp.summary,
+        ctx.subject,
+        ctx.grade,
+        n=ctx.n,
+        use_original_figures=ctx.use_original_figures,
+        include_figures=ctx.include_figures,
+        original_figure_hint=ctx.original_figure_hint,
+        difficulty=ctx.diff,
+        allowed_qtypes=ctx.allowed,
+    )
+    practice.knowledge_point_key = kp.key
+    practice.knowledge_point_name = kp.name
+    return practice
+
+
+def _generate_chunk_practice_pdf_for_kp(
+    session: Session,
+    paper: ExamPaper,
+    kp: KnowledgePointItem,
+    question_count: int,
+    *,
+    use_original_figures: bool,
+    include_figures: bool,
+    difficulty: str = "medium",
+    question_types_json: str = "[]",
+    output_mode: str = "questions_and_answers",
+    source_tool: str = "generate_chunk_practice_pdf",
+    config_extra: dict | None = None,
+) -> str | None:
+    """生成单考点练习与答案 PDF 并入库；成功返回 None，失败返回简短错误文案。"""
+    ctx = _prepare_practice_call(
+        paper,
+        question_count=question_count,
+        use_original_figures=use_original_figures,
+        include_figures=include_figures,
+        difficulty=difficulty,
+        question_types_json=question_types_json,
+        output_mode=output_mode,
+    )
+    try:
+        practice = _draft_practice_set(kp, ctx)
+    except Exception as e:
+        timeout = user_text_for_layout_timeout(e)
+        if timeout:
+            return timeout
+        return tool_error_user_text("出题失败：", e)
+    return store_drafted_practice(
+        session,
+        paper,
+        kp,
+        practice,
+        n=ctx.n,
+        use_original_figures=ctx.use_original_figures,
+        include_figures=ctx.include_figures,
+        diff=ctx.diff,
+        allowed=ctx.allowed,
+        om=ctx.om,
+        order_map=ctx.order_map,
+        align=ctx.align,
+        subject=ctx.subject,
+        source_tool=source_tool,
+        config_extra=config_extra,
+    )
+
+
 @tool
 def structure_exam_paper(paper_id: str) -> str:
     """【必选第一步】将数据库中该试卷的 raw_text 解析为结构化题目（选择/填空等）。
@@ -305,6 +522,8 @@ def structure_exam_paper(paper_id: str) -> str:
         p = _get_paper(session, paper_id)
         if not p or not p.raw_text:
             return "错误：找不到试卷或尚未提取文本，请先上传 PDF/Word 或粘贴内容。"
+        if is_unreadable_page(p.raw_text):
+            return UNREADABLE_PAGE
         try:
             sp = structure_paper_text(p.raw_text)
         except Exception as e:
@@ -378,16 +597,81 @@ def run_knowledge_analysis(paper_id: str) -> str:
             ka = analyze_knowledge(summary, p.alignment_json)
         except Exception as e:
             return tool_error_user_text("考点分析失败：", e)
+
+        def ask_one(order: int, stem: str) -> KnowledgeAnalysisResult:
+            try:
+                return analyze_one_question(order, stem, p.alignment_json or {})
+            except Exception as exc:
+                if is_connection_timeout(exc):
+                    raise KnowledgeFillTimeout(
+                        KnowledgeAnalysisResult(
+                            theme_title="",
+                            knowledge_points=[],
+                            mappings=[],
+                        )
+                    ) from exc
+                raise
+
+        md_path = export_dir_for_conversation(p.conversation_id) / f"考点说明_{p.id}.md"
+
+        def write_knowledge_markdown(saved: KnowledgeAnalysisResult) -> None:
+            md_path.write_text(
+                build_knowledge_markdown(saved, p.alignment_json),
+                encoding="utf-8",
+            )
+            p.knowledge_markdown_path = md_path.as_posix()
+
+        pre_fill = ka
+        try:
+            ka = fill_missing_knowledge(sp, ka, ask_one)
+        except KnowledgeFillTimeout as exc:
+            p.knowledge_analysis_json = exc.analysis.model_dump()
+            write_knowledge_markdown(exc.analysis)
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("", exc)
+        except Exception as exc:
+            p.knowledge_analysis_json = pre_fill.model_dump()
+            write_knowledge_markdown(pre_fill)
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("考点补全失败：", exc)
+
         p.knowledge_analysis_json = ka.model_dump()
-        conv_id = p.conversation_id
-        md_path = export_dir_for_conversation(conv_id) / f"考点说明_{p.id}.md"
-        md_path.write_text(
-            build_knowledge_markdown(ka, p.alignment_json),
-            encoding="utf-8",
-        )
-        p.knowledge_markdown_path = md_path.as_posix()
+        write_knowledge_markdown(ka)
         session.add(p)
+        p.knowledge_explanation_hidden = False
         session.commit()
+        already_stored = _knowledge_pdf_already_stored(p.artifacts)
+        pdf_path = md_path.with_name(f"考点说明_{p.id}.pdf")
+
+        def write_pdf() -> None:
+            try:
+                render_knowledge_pdf(
+                    knowledge_pdf_blocks(ka, p.alignment_json),
+                    pdf_path,
+                )
+            except KnowledgePdfTimeout:
+                raise
+            except Exception as exc:
+                if _is_knowledge_pdf_timeout(exc):
+                    raise KnowledgePdfTimeout(stored=False) from exc
+                raise
+
+        try:
+            outcome = store_knowledge_pdf(
+                already_stored=already_stored,
+                write_pdf=write_pdf,
+            )
+        except KnowledgePdfTimeout as exc:
+            _unlink_partial_knowledge_pdf(pdf_path)
+            return tool_error_user_text("", exc)
+        except Exception as e:
+            _unlink_partial_knowledge_pdf(pdf_path)
+            return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
+        if outcome == "stored":
+            _replace_knowledge_pdf_artifact(session, p, pdf_path)
+            session.commit()
         return "成功：考点分析完成，说明文档已生成。"
 
 
@@ -500,10 +784,80 @@ def generate_chunk_practice_pdfs_batch(
         return "批量结果：\n" + "\n".join(lines)
 
 
+@tool
+def generate_all_practice_pdfs(paper_id: str) -> str:
+    """为该卷每个考点各生成一份练习卷。已有练习卷的考点会跳过，判断通过后才入库。
+    出题选项与单考点工具的默认值相同，并合并该卷已保存的练习配置。"""
+    with sync_session() as session:
+        paper = _get_paper(session, paper_id)
+        if not paper or not paper.knowledge_analysis_json:
+            return "请先完成考点分析。"
+        ka = KnowledgeAnalysisResult.model_validate(paper.knowledge_analysis_json)
+        points = [(item.key, item.name) for item in ka.knowledge_points]
+        kp_by_key = {item.key: item for item in ka.knowledge_points}
+        stored_keys = _stored_pdf_question_keys(session, paper.id)
+        ctx = _prepare_practice_call(
+            paper,
+            question_count=10,
+            use_original_figures=False,
+            include_figures=True,
+            difficulty="medium",
+            question_types_json="[]",
+            output_mode="questions_and_answers",
+        )
+
+        def generate_one(key: str, name: str) -> tuple[str, str]:
+            kp = kp_by_key[key]
+
+            def draft(_draft_key: str, _draft_name: str):
+                try:
+                    practice = _draft_practice_set(kp, ctx)
+                except Exception as exc:
+                    if _draft_is_connection_timeout(exc):
+                        raise PracticeFillTimeout(stored_keys) from exc
+                    raise
+                stems = [q.stem for q in practice.questions]
+                figure_kinds = [q.figure_kind for q in practice.questions]
+                uses_paper_figure = [q.use_paper_figure for q in practice.questions]
+                return stems, figure_kinds, uses_paper_figure, practice
+
+            def store(practice: PracticeSet) -> None:
+                err = store_drafted_practice(
+                    session,
+                    paper,
+                    kp,
+                    practice,
+                    n=ctx.n,
+                    use_original_figures=ctx.use_original_figures,
+                    include_figures=ctx.include_figures,
+                    diff=ctx.diff,
+                    allowed=ctx.allowed,
+                    om=ctx.om,
+                    order_map=ctx.order_map,
+                    align=ctx.align,
+                    subject=ctx.subject,
+                    source_tool="generate_all_practice_pdfs",
+                    config_extra=None,
+                )
+                if err:
+                    raise RuntimeError(err)
+
+            return generate_one_for_tool(key, name, draft=draft, store=store)
+
+        try:
+            fill_practice_pdfs(points, stored_keys, generate_one)
+        except PracticeFillTimeout as exc:
+            return tool_error_user_text("", exc)
+        except Exception as exc:
+            return tool_error_user_text("出题失败：", exc)
+        return "成功：练习卷已入库，每个考点一份。"
+
+
 AGENT_TOOLS = [
     structure_exam_paper,
     save_alignment_metadata,
     run_knowledge_analysis,
     generate_chunk_practice_pdf,
     generate_chunk_practice_pdfs_batch,
+    generate_all_practice_pdfs,
 ]

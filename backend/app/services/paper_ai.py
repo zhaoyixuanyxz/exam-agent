@@ -108,6 +108,17 @@ def analyze_knowledge(
     return parse_pydantic_from_llm_text(raw, KnowledgeAnalysisResult)
 
 
+def analyze_one_question(order: int, stem: str, alignment: dict) -> KnowledgeAnalysisResult:
+    sys = (
+        "只为下面这一道题标注至少一个考点。可以有多个。"
+        "不要改题号。name 与 summary 用中文。key 用英文小写加下划线。"
+        f"{_JSON_ONLY}\n{_KNOWLEDGE_SCHEMA}"
+    )
+    human = f"对齐信息：{alignment}\n\n第{order}题：{stem}"
+    raw = _invoke_text(sys, human)
+    return parse_pydantic_from_llm_text(raw, KnowledgeAnalysisResult)
+
+
 _PRACTICE_QTYPES_LINE = "单选、多选、填空、简答、判断（qtype 字段必须恰好为这五个词之一，勿写「选择题」「主观题」等别名）。"
 
 _PRACTICE_SCHEMA = f"""
