@@ -61,6 +61,37 @@ def _unlink_partial_knowledge_pdf(path: Path) -> None:
         pass
 
 
+def _knowledge_pdf_already_stored(artifacts: list[Artifact] | None) -> bool:
+    return any(
+        a.kind == "knowledge_pdf" and bool(a.path) and Path(a.path).is_file()
+        for a in (artifacts or [])
+    )
+
+
+def _replace_knowledge_pdf_artifact(
+    session: Session, paper: ExamPaper, pdf_path: Path
+) -> None:
+    existing = [a for a in (paper.artifacts or []) if a.kind == "knowledge_pdf"]
+    primary = existing[0] if existing else None
+    if primary is not None:
+        primary.path = pdf_path.as_posix()
+        primary.display_name = "考点说明"
+        primary.source_tool = "run_knowledge_analysis"
+        session.add(primary)
+        for extra in existing[1:]:
+            session.delete(extra)
+        return
+    session.add(
+        Artifact(
+            paper_id=paper.id,
+            kind="knowledge_pdf",
+            display_name="考点说明",
+            path=pdf_path.as_posix(),
+            source_tool="run_knowledge_analysis",
+        )
+    )
+
+
 def _normalize_kp_query(raw: str) -> str:
     s = (raw or "").strip().strip('"').strip("'").strip("`")
     if "```" in s:
@@ -409,9 +440,7 @@ def run_knowledge_analysis(paper_id: str) -> str:
         p.knowledge_markdown_path = md_path.as_posix()
         session.add(p)
         session.commit()
-        already_stored = any(
-            a.kind == "knowledge_pdf" for a in (p.artifacts or [])
-        )
+        already_stored = _knowledge_pdf_already_stored(p.artifacts)
         pdf_path = md_path.with_name(f"考点说明_{p.id}.pdf")
 
         def write_pdf() -> None:
@@ -435,16 +464,11 @@ def run_knowledge_analysis(paper_id: str) -> str:
         except KnowledgePdfTimeout as exc:
             _unlink_partial_knowledge_pdf(pdf_path)
             return tool_error_user_text("", exc)
+        except Exception as e:
+            _unlink_partial_knowledge_pdf(pdf_path)
+            return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
         if outcome == "stored":
-            session.add(
-                Artifact(
-                    paper_id=p.id,
-                    kind="knowledge_pdf",
-                    display_name="考点说明",
-                    path=pdf_path.as_posix(),
-                    source_tool="run_knowledge_analysis",
-                )
-            )
+            _replace_knowledge_pdf_artifact(session, p, pdf_path)
             session.commit()
         return "成功：考点分析完成，说明文档已生成。"
 
