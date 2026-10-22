@@ -68,3 +68,29 @@ def test_render_knowledge_pdf_has_title_blocks_and_color(tmp_path: Path):
     assert "第 1 题" in text
     assert "顶点式" in text and "图像性质" in text
     assert any(_fill_in_palette(drawing.get("fill")) for drawing in drawings)
+
+
+def test_store_skips_existing_and_timeout_keeps_it():
+    from app.services.knowledge_pdf import TIMEOUT_MESSAGE, KnowledgePdfTimeout, store_knowledge_pdf
+    from app.services.llm_errors import tool_error_user_text
+
+    calls = {"n": 0}
+
+    def write_pdf():
+        calls["n"] += 1
+        raise KnowledgePdfTimeout(stored=True)
+
+    out = store_knowledge_pdf(already_stored=True, write_pdf=write_pdf)
+    assert out == "skip"
+    assert calls["n"] == 0
+
+    try:
+        store_knowledge_pdf(already_stored=False, write_pdf=write_pdf)
+        raised = False
+    except KnowledgePdfTimeout as exc:
+        raised = True
+        assert exc.stored is False
+    assert raised is True
+    assert tool_error_user_text("", KnowledgePdfTimeout(stored=False)) == TIMEOUT_MESSAGE
+    assert TIMEOUT_MESSAGE == "连接超时建议重试"
+    assert "技术说明" not in TIMEOUT_MESSAGE

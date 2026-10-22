@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from fpdf import FPDF
@@ -10,6 +11,24 @@ from app.models.schemas import KnowledgeAnalysisResult
 from app.services.fonts import resolve_kaiti_font
 
 BLOCK_FILLS = ((214, 234, 248), (252, 229, 205), (232, 218, 239))
+
+TIMEOUT_MESSAGE = "连接超时建议重试"
+
+
+class KnowledgePdfTimeout(Exception):
+    def __init__(self, stored: bool):
+        self.stored = stored
+        super().__init__(TIMEOUT_MESSAGE)
+
+
+def store_knowledge_pdf(*, already_stored: bool, write_pdf: Callable[[], None]) -> str:
+    if already_stored:
+        return "skip"
+    try:
+        write_pdf()
+    except KnowledgePdfTimeout:
+        raise KnowledgePdfTimeout(stored=False) from None
+    return "stored"
 
 
 def knowledge_pdf_blocks(ka: KnowledgeAnalysisResult, alignment: dict) -> dict:
