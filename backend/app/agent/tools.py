@@ -296,8 +296,12 @@ def structure_exam_paper(paper_id: str) -> str:
     分析考点、对齐题型前必须先调用；失败时用简短中文说明原因，勿谎称工具不可用。"""
     with sync_session() as session:
         p = _get_paper(session, paper_id)
-        if not p or not p.raw_text:
+        if not p:
             return "错误：找不到试卷或尚未提取文本，请先上传 PDF/Word 或粘贴内容。"
+        if not (p.raw_text or "").strip():
+            from app.services.page_text import EMPTY_PAPER_MESSAGE
+
+            return EMPTY_PAPER_MESSAGE
         try:
             sp = structure_paper_text(p.raw_text)
         except Exception as e:

@@ -1,8 +1,14 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.db.models import ExamPaper
+from app.db.sync_session import sync_session
+from app.main import app
 from app.services.exam_ingest import MIXED_UPLOAD_MESSAGE, extract_exam_text
 from app.services.page_text import EMPTY_PAPER_MESSAGE
 
@@ -95,3 +101,69 @@ def test_extract_exam_text_rejects_doc(tmp_path: Path):
     p.write_bytes(b"x")
     with pytest.raises(ValueError, match="docx"):
         extract_exam_text([p], read_image_text=lambda _b: "x")
+
+
+def test_chat_stream_accepts_two_pngs_as_one_paper():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with patch(
+            "app.api.chat.extract_exam_text",
+            return_value="第一题 一次函数\n\n第二题 几何",
+        ) as ingest:
+            r = client.post(
+                "/api/chat/stream",
+                data={"conversation_id": cid, "message": "", "source_type": "pdf"},
+                files=[
+                    ("files", ("a.png", b"\x89PNG\r\n\x1a\n", "image/png")),
+                    ("files", ("b.png", b"\x89PNG\r\n\x1a\n", "image/png")),
+                ],
+            )
+        assert r.status_code == 200
+        assert ingest.called
+        paths = ingest.call_args.args[0]
+        assert [p.name.endswith(".png") for p in paths] == [True, True]
+        with sync_session() as session:
+            papers = list(
+                session.scalars(select(ExamPaper).where(ExamPaper.conversation_id == cid))
+            )
+            assert len(papers) == 1
+            assert "一次函数" in (papers[0].raw_text or "")
+
+
+def test_chat_stream_rejects_mixed_pdf_and_png():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        r = client.post(
+            "/api/chat/stream",
+            data={"conversation_id": cid, "message": "", "source_type": "pdf"},
+            files=[
+                ("files", ("e.pdf", b"%PDF-1.4", "application/pdf")),
+                ("files", ("a.png", b"\x89PNG\r\n\x1a\n", "image/png")),
+            ],
+        )
+        assert r.status_code == 400
+        assert "请分开交" in r.json()["detail"]
+
+
+def test_chat_stream_empty_vision_still_stores_paper():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with patch("app.api.chat.extract_exam_text", return_value=""):
+            r = client.post(
+                "/api/chat/stream",
+                data={"conversation_id": cid, "message": "", "source_type": "pdf"},
+                files=[("files", ("a.png", b"\x89PNG\r\n\x1a\n", "image/png"))],
+            )
+        assert r.status_code == 200
+        with sync_session() as session:
+            papers = list(
+                session.scalars(select(ExamPaper).where(ExamPaper.conversation_id == cid))
+            )
+            assert len(papers) == 1
+            assert papers[0].raw_text == ""
+            paper_id = papers[0].id
+        from app.agent.tools import structure_exam_paper
+
+        out = structure_exam_paper.invoke({"paper_id": paper_id})
+        assert out == EMPTY_PAPER_MESSAGE
+        assert "连接超时建议重试" not in str(out)

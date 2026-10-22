@@ -32,12 +32,15 @@ from app.services.conversation_delete import (
     delete_conversation_cascade,
     unlink_conversation_files,
 )
+from app.services.exam_ingest import extract_exam_text
 from app.services.llm_errors import user_message_for_llm_error
+from app.services.page_text import EMPTY_PAPER_MESSAGE
 from app.services.parsers.pipeline import parse_input
 from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
 from app.services.question_assets import rebuild_question_assets_for_paper_id
 from app.services.storage import new_stored_path
 from app.services.structured_inspect import build_summary_from_parsed, list_anomalies
+from app.services.vision_read import read_image_text
 from app.services.workflow_state import (
     build_workflow_payload,
     effective_structured_status,
@@ -239,6 +242,7 @@ async def chat_stream(
     source_type: str = Form("text"),
     url: str | None = Form(None),
     file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
     target_paper_id: str | None = Form(None),
     practice_generate_config: str | None = Form(None),
 ):
@@ -251,28 +255,39 @@ async def chat_stream(
     paper_id: str | None = None
     extra_note = ""
 
+    uploads: list[UploadFile] = list(files or [])
     if file and file.filename:
-        raw = await file.read()
-        if len(raw) > settings.max_upload_bytes:
-            raise HTTPException(413, "文件超过 50MB 限制")
-        dest = new_stored_path(file.filename)
-        dest.write_bytes(raw)
-        st = source_type.lower().strip()
-        if st not in ("pdf", "docx", "text"):
-            st = "pdf" if dest.suffix.lower() == ".pdf" else "docx"
+        uploads.append(file)
+    if uploads:
+        dests: list[Path] = []
+        for upload in uploads:
+            raw = await upload.read()
+            if len(raw) > settings.max_upload_bytes:
+                raise HTTPException(413, "文件超过 50MB 限制")
+            name = upload.filename or "file"
+            dest = new_stored_path(name)
+            dest.write_bytes(raw)
+            dests.append(dest)
         try:
-            text, _ = parse_input(st, file_path=dest, url=None, text=None)
-        except Exception as e:
-            raise HTTPException(400, f"解析失败: {e!s}") from e
+            text = extract_exam_text(dests, read_image_text=read_image_text)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         pid = str(uuid.uuid4())
-        dname = Path(file.filename or "file").stem or "上传文件"
+        dname = Path(uploads[0].filename or "file").stem or "上传文件"
         if len(dname) > 500:
             dname = dname[:500]
+        suffixes = {dest.suffix.lower() for dest in dests}
+        if ".pdf" in suffixes:
+            st = "pdf"
+        elif ".docx" in suffixes:
+            st = "docx"
+        else:
+            st = "pdf"
         session.add(
             ExamPaper(
                 id=pid,
                 conversation_id=conversation_id,
-                raw_path=dest.as_posix(),
+                raw_path=dests[0].as_posix(),
                 source_type=st,
                 raw_text=text,
                 display_name=dname,
@@ -281,8 +296,15 @@ async def chat_stream(
         await session.commit()
         paper_id = pid
         new_paper_from_upload = True
-        preview = (text[:1200] + "…") if len(text) > 1200 else text
-        extra_note = f"\n\n【用户上传了试卷文件，paper_id={paper_id}】\n正文预览：\n{preview}"
+        if not text.strip():
+            extra_note = (
+                f"\n\n【用户上传了试卷文件，paper_id={paper_id}】\n{EMPTY_PAPER_MESSAGE}"
+            )
+        else:
+            preview = (text[:1200] + "…") if len(text) > 1200 else text
+            extra_note = (
+                f"\n\n【用户上传了试卷文件，paper_id={paper_id}】\n正文预览：\n{preview}"
+            )
     elif url and url.strip() and source_type.lower() == "url":
         try:
             text, _ = parse_input("url", url=url.strip())
