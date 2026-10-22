@@ -534,7 +534,11 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
         items: list[dict] = []
         seen: set[str] = set()
         for p in papers:
-            if p.knowledge_markdown_path and Path(p.knowledge_markdown_path).is_file():
+            if (
+                not p.knowledge_explanation_hidden
+                and p.knowledge_markdown_path
+                and Path(p.knowledge_markdown_path).is_file()
+            ):
                 mp = p.knowledge_markdown_path
                 if mp not in seen:
                     seen.add(mp)
@@ -568,6 +572,8 @@ def _list_artifacts_sync(conversation_id: str) -> list[dict]:
                 reverse=True,
             )
             for a in arts:
+                if not a.path or not Path(a.path).is_file():
+                    continue
                 if a.path in seen:
                     continue
                 seen.add(a.path)

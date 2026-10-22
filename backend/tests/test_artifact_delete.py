@@ -2,10 +2,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.api.chat import _list_artifacts_sync
 from app.db.models import Artifact, ExamPaper, QuestionAsset
 from app.db.sync_session import sync_session
 from app.main import app
-from app.services.artifact_delete import PDF_KINDS, delete_stored_pdf
+from app.services.artifact_delete import PDF_KINDS, delete_stored_pdf, hide_knowledge_explanation
 from app.services.storage import export_dir_for_conversation
 
 
@@ -67,3 +68,64 @@ def test_delete_stored_pdf_unlinks_file_keeps_questions():
     assert "pdf_question" in PDF_KINDS
     assert "pdf_answer" in PDF_KINDS
     assert "knowledge_pdf" in PDF_KINDS
+
+
+def test_hide_knowledge_explanation_keeps_markdown_file():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        out = export_dir_for_conversation(cid)
+        md = out / "考点说明_x.md"
+        md.write_text("# 说明", encoding="utf-8")
+        pdf = _write_pdf(cid, "考点说明_x.pdf")
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                knowledge_markdown_path=md.as_posix(),
+            )
+            s.add(paper)
+            s.flush()
+            art = Artifact(
+                paper_id=paper.id,
+                kind="knowledge_pdf",
+                path=pdf.as_posix(),
+                display_name="考点说明",
+            )
+            s.add(art)
+            s.commit()
+            paper_id = paper.id
+            art_id = art.id
+        with sync_session() as s:
+            hide_knowledge_explanation(s, s.get(ExamPaper, paper_id))
+            delete_stored_pdf(s, s.get(Artifact, art_id))
+            s.commit()
+        assert md.is_file() is True
+        assert pdf.is_file() is False
+        items = _list_artifacts_sync(cid)
+        kinds = [i["kind"] for i in items]
+        assert "markdown" not in kinds
+        assert "knowledge_pdf" not in kinds
+
+
+def test_delete_missing_file_still_drops_artifact():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        missing = export_dir_for_conversation(cid) / "gone.pdf"
+        with sync_session() as s:
+            paper = ExamPaper(conversation_id=cid, source_type="test")
+            s.add(paper)
+            s.flush()
+            art = Artifact(
+                paper_id=paper.id,
+                kind="pdf_answer",
+                path=missing.as_posix(),
+                knowledge_point_key="kp_a",
+            )
+            s.add(art)
+            s.commit()
+            art_id = art.id
+        with sync_session() as s:
+            delete_stored_pdf(s, s.get(Artifact, art_id))
+            s.commit()
+        with sync_session() as s:
+            assert s.get(Artifact, art_id) is None

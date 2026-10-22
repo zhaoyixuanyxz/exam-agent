@@ -10,6 +10,11 @@ from app.services.practice_path_security import resolve_under_data_dir
 PDF_KINDS = frozenset({"pdf_question", "pdf_answer", "knowledge_pdf"})
 
 
+def hide_knowledge_explanation(session: Session, paper: ExamPaper) -> None:
+    paper.knowledge_explanation_hidden = True
+    session.add(paper)
+
+
 def delete_stored_pdf(session: Session, artifact: Artifact) -> None:
     raw = (artifact.path or "").strip()
     if raw:
@@ -20,6 +25,6 @@ def delete_stored_pdf(session: Session, artifact: Artifact) -> None:
     if artifact.kind == "knowledge_pdf":
         paper = session.get(ExamPaper, artifact.paper_id)
         if paper is not None:
-            setattr(paper, "knowledge_explanation_hidden", True)
+            paper.knowledge_explanation_hidden = True
             session.add(paper)
     session.delete(artifact)
