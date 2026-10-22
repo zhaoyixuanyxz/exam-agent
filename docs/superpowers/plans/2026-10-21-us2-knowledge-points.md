@@ -214,10 +214,7 @@ def fill_missing_knowledge(
         if not missing:
             return analysis
         order = missing[0]
-        try:
-            extra = ask_one(order, _stem_for(paper, order))
-        except KnowledgeFillTimeout:
-            raise KnowledgeFillTimeout(analysis) from None
+        extra = ask_one(order, _stem_for(paper, order))
         analysis = merge_fill(analysis, extra, order)
 ```
 
@@ -370,7 +367,18 @@ def is_connection_timeout(exc: BaseException) -> bool:
     return "timeout" in name or "timed out" in text or "timeout" in text
 ```
 
-Change the loop in `fill_missing_knowledge` so `ask_one` may raise `KnowledgeFillTimeout`. Do not catch it. Do not add a mapping when it is raised.
+After Task 2 the loop does not catch timeouts. Change it to:
+
+```python
+        order = missing[0]
+        try:
+            extra = ask_one(order, _stem_for(paper, order))
+        except KnowledgeFillTimeout:
+            raise KnowledgeFillTimeout(analysis) from None
+        analysis = merge_fill(analysis, extra, order)
+```
+
+`ask_one` may raise `KnowledgeFillTimeout` with any analysis object. The loop discards that object and re-raises with the analysis it already holds, so the timed-out question gets no new mapping.
 
 In `llm_errors.py` `tool_error_user_text`, before other branches:
 
@@ -410,7 +418,13 @@ In `run_knowledge_analysis`, after `ka = analyze_knowledge(...)` succeeds:
                 return analyze_one_question(order, stem, p.alignment_json or {})
             except Exception as exc:
                 if is_connection_timeout(exc):
-                    raise KnowledgeFillTimeout() from exc
+                    raise KnowledgeFillTimeout(
+                        KnowledgeAnalysisResult(
+                            theme_title="",
+                            knowledge_points=[],
+                            mappings=[],
+                        )
+                    ) from exc
                 raise
 
         try:

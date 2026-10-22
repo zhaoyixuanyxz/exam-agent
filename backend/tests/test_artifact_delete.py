@@ -339,7 +339,11 @@ def test_practice_regenerate_rewrites_questions_only_when_pdf_exists(tmp_path: P
 
 def test_run_knowledge_analysis_clears_hidden_flag(monkeypatch):
     from app.agent.tools import run_knowledge_analysis
-    from app.models.schemas import KnowledgeAnalysisResult, KnowledgePointItem
+    from app.models.schemas import (
+        KnowledgeAnalysisResult,
+        KnowledgePointItem,
+        QuestionKnowledgeMapping,
+    )
 
     def fake_analyze(_summary, _align):
         return KnowledgeAnalysisResult(
@@ -347,10 +351,13 @@ def test_run_knowledge_analysis_clears_hidden_flag(monkeypatch):
             knowledge_points=[
                 KnowledgePointItem(key="kp_a", name="顶点式", summary="配方法求顶点", book_chapter_hint=""),
             ],
-            mappings=[],
+            mappings=[
+                QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_a"),
+            ],
         )
 
     monkeypatch.setattr("app.agent.tools.analyze_knowledge", fake_analyze)
+    monkeypatch.setattr("app.agent.tools.render_knowledge_pdf", lambda *_a, **_k: None)
     with TestClient(app) as client:
         cid = client.post("/api/conversations").json()["conversation_id"]
         with sync_session() as s:
