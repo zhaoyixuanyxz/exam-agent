@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    # 识图专用。deepseek-chat 不收图；官方当前 id 为 deepseek-flash。
+    deepseek_vision_model: str = "deepseek-flash"
 
     # 分块练习出题期望的 max_tokens；实际请求见 effective_practice_max_output_tokens（按模型钳制）。
     practice_max_output_tokens: int = 8192

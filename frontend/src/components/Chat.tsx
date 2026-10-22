@@ -24,6 +24,18 @@ export type ChatBootAction = {
 
 const API = "";
 
+function uploadKind(name: string): "doc" | "img" | "other" {
+  const s = name.toLowerCase();
+  if (s.endsWith(".pdf") || s.endsWith(".docx") || s.endsWith(".doc")) return "doc";
+  if (/\.(jpe?g|png)$/.test(s)) return "img";
+  return "other";
+}
+
+function filesAreMixed(list: File[]): boolean {
+  const kinds = new Set(list.map((f) => uploadKind(f.name)));
+  return kinds.has("doc") && kinds.has("img");
+}
+
 type ChatProps = {
   conversationId: string;
   /** 发送一轮完成后用于刷新侧边栏排序与预览 */
@@ -63,7 +75,8 @@ export function Chat({
   const [input, setInput] = useState("");
   const [sourceType, setSourceType] = useState("pdf");
   const [url, setUrl] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [artifacts, setArtifacts] = useState<StreamArtifact[]>([]);
   const [papers, setPapers] = useState<PaperListItem[]>([]);
@@ -220,7 +233,7 @@ export function Chat({
   );
 
   const splitTarget = useMemo(() => {
-    const pdf = papers.filter((x) => x.source_type === "pdf" && x.raw_path);
+    const pdf = papers.filter((x) => (x.raw_path ?? "").trim().toLowerCase().endsWith(".pdf"));
     if (!pdf.length) return null;
     if (targetPaperId) {
       const byTarget = pdf.find((x) => x.id === targetPaperId);
@@ -459,16 +472,29 @@ export function Chat({
     fd.append("message", input);
     fd.append("source_type", sourceType);
     if (url.trim()) fd.append("url", url.trim());
-    if (file) fd.append("file", file);
+    if (filesAreMixed(files)) {
+      setClientStreamErrorHint("请分开交");
+      setUploadNote("请分开交");
+      return;
+    }
+    for (const f of files) {
+      fd.append("files", f);
+    }
     if (targetPaperId) fd.append("target_paper_id", targetPaperId);
     fd.append("practice_generate_config", practiceConfigToJson(practiceConfig));
 
     const userLine =
       input.trim() ||
-      (file ? `📎 上传：${file.name}` : url.trim() ? `🔗 ${url}` : "请开始分析");
+      (files.length
+        ? `📎 上传：${files.map((f) => f.name).join("、")}`
+        : url.trim()
+          ? `🔗 ${url}`
+          : "请开始分析");
     setBubbles((b) => [...b, { role: "user", text: userLine }]);
     setInput("");
-    setFile(null);
+    setFiles([]);
+    setUploadNote(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
 
     startStream(requestCid, fd, {
       onComplete: () => {
@@ -481,7 +507,7 @@ export function Chat({
   }, [
     busy,
     conversationId,
-    file,
+    files,
     input,
     loadPapers,
     onConversationActivity,
@@ -711,19 +737,33 @@ export function Chat({
               ref={fileInputRef}
               type="file"
               className="hidden"
-              accept=".pdf,.docx"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              accept=".pdf,.docx,.jpg,.jpeg,.png"
+              multiple
+              onChange={(e) => {
+                const list = Array.from(e.target.files ?? []);
+                if (filesAreMixed(list)) {
+                  setClientStreamErrorHint("请分开交");
+                  setUploadNote("请分开交");
+                  setFiles([]);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                  return;
+                }
+                setClientStreamErrorHint(null);
+                setUploadNote(null);
+                setFiles(list);
+              }}
             />
           </label>
         </div>
-        {file && (
+        {files.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            <span>已选：{file.name}</span>
+            <span>已选：{files.map((f) => f.name).join("、")}（一份卷）</span>
             <button
               type="button"
               className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
               onClick={() => {
-                setFile(null);
+                setFiles([]);
+                setUploadNote(null);
                 if (fileInputRef.current) fileInputRef.current.value = "";
               }}
             >
@@ -731,6 +771,7 @@ export function Chat({
             </button>
           </div>
         )}
+        {uploadNote && <p className="text-xs text-rose-700">{uploadNote}</p>}
         <div className="flex gap-2">
           <textarea
             className="min-h-[72px] flex-1 resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-300 focus:outline-none focus:ring-1 focus:ring-sky-200"
