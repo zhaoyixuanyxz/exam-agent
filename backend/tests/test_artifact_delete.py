@@ -129,3 +129,63 @@ def test_delete_missing_file_still_drops_artifact():
             s.commit()
         with sync_session() as s:
             assert s.get(Artifact, art_id) is None
+
+
+def test_delete_artifact_endpoint_removes_list_item():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _write_pdf(cid, "q.pdf")
+        with sync_session() as s:
+            paper = ExamPaper(conversation_id=cid, source_type="test")
+            s.add(paper)
+            s.flush()
+            qa = QuestionAsset(
+                conversation_id=cid,
+                paper_id=paper.id,
+                question_order=1,
+                stem="还在",
+            )
+            art = Artifact(
+                paper_id=paper.id,
+                kind="pdf_question",
+                path=pdf.as_posix(),
+                knowledge_point_key="kp_a",
+            )
+            s.add_all([qa, art])
+            s.commit()
+            art_id = art.id
+            qa_id = qa.id
+        listed = client.get(f"/api/conversations/{cid}/artifacts").json()["items"]
+        assert any(i["id"] == art_id for i in listed)
+        rd = client.delete(f"/api/conversations/{cid}/artifacts/{art_id}")
+        assert rd.status_code == 200
+        assert rd.json() == {"ok": True}
+        assert pdf.is_file() is False
+        listed2 = client.get(f"/api/conversations/{cid}/artifacts").json()["items"]
+        assert all(i["id"] != art_id for i in listed2)
+        with sync_session() as s:
+            assert s.get(QuestionAsset, qa_id) is not None
+
+
+def test_delete_markdown_slot_hides_without_unlinking():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        md = export_dir_for_conversation(cid) / "考点说明_p.md"
+        md.write_text("旧稿", encoding="utf-8")
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                knowledge_markdown_path=md.as_posix(),
+            )
+            s.add(paper)
+            s.commit()
+            paper_id = paper.id
+        rd = client.delete(f"/api/conversations/{cid}/artifacts/md:{paper_id}")
+        assert rd.status_code == 200
+        assert md.read_text(encoding="utf-8") == "旧稿"
+        kinds = [
+            i["kind"]
+            for i in client.get(f"/api/conversations/{cid}/artifacts").json()["items"]
+        ]
+        assert "markdown" not in kinds
