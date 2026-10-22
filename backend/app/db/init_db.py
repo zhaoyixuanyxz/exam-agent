@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.db.migrate import (
     apply_sqlite_artifact_v21_columns,
+    apply_sqlite_exam_paper_knowledge_explanation_hidden,
     apply_sqlite_exam_paper_practice_config_column,
     apply_sqlite_exam_paper_v2_columns,
     apply_sqlite_question_assets_v23_columns,
@@ -17,6 +18,7 @@ async def init_db(db_engine: AsyncEngine | None = None) -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(apply_sqlite_exam_paper_v2_columns)
         await conn.run_sync(apply_sqlite_exam_paper_practice_config_column)
+        await conn.run_sync(apply_sqlite_exam_paper_knowledge_explanation_hidden)
         await conn.run_sync(apply_sqlite_artifact_v21_columns)
         await conn.run_sync(apply_sqlite_question_assets_v23_columns)
     await ensure_v23_seed_data(eng)

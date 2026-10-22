@@ -35,9 +35,15 @@ type Props = {
   items: StreamArtifact[];
   busy: boolean;
   onRegenerateFromArtifact: (art: StreamArtifact) => void;
+  onDeleteArtifact: (art: StreamArtifact) => void;
 };
 
-export function ArtifactCenter({ items, busy, onRegenerateFromArtifact }: Props) {
+export function ArtifactCenter({
+  items,
+  busy,
+  onRegenerateFromArtifact,
+  onDeleteArtifact,
+}: Props) {
   const grouped = useMemo(() => {
     const m = new Map<string, StreamArtifact[]>();
     for (const c of CATEGORY_ORDER) m.set(c, []);
@@ -123,15 +129,32 @@ export function ArtifactCenter({ items, busy, onRegenerateFromArtifact }: Props)
                           )}
                         </div>
                       </div>
-                      {canRegen && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          className="shrink-0 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-medium text-violet-900 hover:bg-violet-100 disabled:opacity-50"
-                          onClick={() => onRegenerateFromArtifact(a)}
-                        >
-                          按此考点再生成
-                        </button>
+                      {(canRegen || a.id) && (
+                        <div className="flex shrink-0 flex-wrap items-center gap-1">
+                          {canRegen && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="shrink-0 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-medium text-violet-900 hover:bg-violet-100 disabled:opacity-50"
+                              onClick={() => onRegenerateFromArtifact(a)}
+                            >
+                              按此考点再生成
+                            </button>
+                          )}
+                          {a.id && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="shrink-0 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-900 hover:bg-rose-100 disabled:opacity-50"
+                              onClick={() => {
+                                if (!confirm("只删这份文件，题目和考点还在。确定删除？")) return;
+                                onDeleteArtifact(a);
+                              }}
+                            >
+                              删除
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   </li>

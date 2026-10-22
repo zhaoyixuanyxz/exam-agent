@@ -49,6 +49,12 @@ def humanize_known_llm_message(msg: str) -> str | None:
 
 def tool_error_user_text(prefix: str, exc: BaseException) -> str:
     """prefix e.g. '考点分析失败：' — append Chinese help or technical tail."""
+    from app.services.knowledge_fill import TIMEOUT_MESSAGE, KnowledgeFillTimeout
+    from app.services.knowledge_pdf import KnowledgePdfTimeout
+    from app.services.practice_fill import PracticeFillTimeout
+
+    if isinstance(exc, (KnowledgeFillTimeout, PracticeFillTimeout, KnowledgePdfTimeout)):
+        return TIMEOUT_MESSAGE
     detail = str(exc)
     friendly = humanize_known_llm_message(detail)
     if friendly:

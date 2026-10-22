@@ -57,6 +57,7 @@ class ExamPaper(Base):
     alignment_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     knowledge_analysis_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     knowledge_markdown_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    knowledge_explanation_hidden: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # V2.1：界面「练习生成配置」最后保存的快照；出题工具优先与此合并
     last_practice_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

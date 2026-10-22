@@ -41,6 +41,19 @@ def apply_sqlite_exam_paper_practice_config_column(connection: Connection) -> No
         )
 
 
+def apply_sqlite_exam_paper_knowledge_explanation_hidden(connection: Connection) -> None:
+    insp = inspect(connection)
+    if not insp.has_table("exam_papers"):
+        return
+    cols = {c["name"] for c in insp.get_columns("exam_papers")}
+    if "knowledge_explanation_hidden" not in cols:
+        connection.execute(
+            text(
+                "ALTER TABLE exam_papers ADD COLUMN knowledge_explanation_hidden BOOLEAN DEFAULT 0"
+            )
+        )
+
+
 def apply_sqlite_artifact_v21_columns(connection: Connection) -> None:
     """为 artifacts 表增加 V2.1 元信息列（若尚不存在）。"""
     insp = inspect(connection)
