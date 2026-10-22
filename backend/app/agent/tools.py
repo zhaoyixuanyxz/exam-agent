@@ -34,6 +34,7 @@ from app.services.knowledge_pdf import (
     render_knowledge_pdf,
     store_knowledge_pdf,
 )
+from app.services.layout_timeout import TIMEOUT_MESSAGE, user_text_for_layout_timeout
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
 from app.services.paper_ai import (
     analyze_knowledge,
@@ -400,6 +401,9 @@ def store_drafted_practice(
                     diag_form_answers,
                 )
     except Exception as e:
+        timeout = user_text_for_layout_timeout(e)
+        if timeout:
+            return timeout
         return f"PDF 渲染失败（检查楷体字体配置）：{e!s}"
     paper_id = paper.id
     q_disp = f"{subject} · {kp.name} · 练习卷"
@@ -486,6 +490,9 @@ def _generate_chunk_practice_pdf_for_kp(
     try:
         practice = _draft_practice_set(kp, ctx)
     except Exception as e:
+        timeout = user_text_for_layout_timeout(e)
+        if timeout:
+            return timeout
         return tool_error_user_text("出题失败：", e)
     return store_drafted_practice(
         session,
@@ -767,6 +774,8 @@ def generate_chunk_practice_pdfs_batch(
                 source_tool="generate_chunk_practice_pdfs_batch",
             )
             if err:
+                if err == TIMEOUT_MESSAGE:
+                    return TIMEOUT_MESSAGE
                 lines.append(f"「{kp.name}」{err}")
             else:
                 lines.append(f"「{kp.name}」练习与答案 PDF 已生成。")
