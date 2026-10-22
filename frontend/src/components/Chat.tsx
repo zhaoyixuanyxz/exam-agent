@@ -76,6 +76,7 @@ export function Chat({
   const [sourceType, setSourceType] = useState("pdf");
   const [url, setUrl] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [artifacts, setArtifacts] = useState<StreamArtifact[]>([]);
   const [papers, setPapers] = useState<PaperListItem[]>([]);
@@ -446,6 +447,7 @@ export function Chat({
     if (url.trim()) fd.append("url", url.trim());
     if (filesAreMixed(files)) {
       setClientStreamErrorHint("请分开交");
+      setUploadNote("请分开交");
       return;
     }
     for (const f of files) {
@@ -464,6 +466,8 @@ export function Chat({
     setBubbles((b) => [...b, { role: "user", text: userLine }]);
     setInput("");
     setFiles([]);
+    setUploadNote(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
 
     startStream(requestCid, fd, {
       onComplete: () => {
@@ -711,11 +715,13 @@ export function Chat({
                 const list = Array.from(e.target.files ?? []);
                 if (filesAreMixed(list)) {
                   setClientStreamErrorHint("请分开交");
+                  setUploadNote("请分开交");
                   setFiles([]);
                   if (fileInputRef.current) fileInputRef.current.value = "";
                   return;
                 }
                 setClientStreamErrorHint(null);
+                setUploadNote(null);
                 setFiles(list);
               }}
             />
@@ -729,6 +735,7 @@ export function Chat({
               className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-50"
               onClick={() => {
                 setFiles([]);
+                setUploadNote(null);
                 if (fileInputRef.current) fileInputRef.current.value = "";
               }}
             >
@@ -736,6 +743,7 @@ export function Chat({
             </button>
           </div>
         )}
+        {uploadNote && <p className="text-xs text-rose-700">{uploadNote}</p>}
         <div className="flex gap-2">
           <textarea
             className="min-h-[72px] flex-1 resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-300 focus:outline-none focus:ring-1 focus:ring-sky-200"
