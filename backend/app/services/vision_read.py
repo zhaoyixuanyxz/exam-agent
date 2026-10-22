@@ -14,7 +14,7 @@ def read_image_text(data: bytes) -> str:
     key = settings.require_deepseek_api_key()
     b64 = base64.b64encode(data).decode("ascii")
     llm = ChatOpenAI(
-        model=settings.deepseek_model,
+        model=settings.deepseek_vision_model,
         api_key=key,
         base_url=settings.deepseek_base_url,
         temperature=0,
