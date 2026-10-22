@@ -247,3 +247,12 @@ def test_retry_unfinished_point_does_not_clear_stored_pdf():
             keys = {row.knowledge_point_key for row in rows}
             assert "kp_a" in keys
             assert "kp_b" in keys
+
+
+def test_chat_runner_imports_layout_timeout_relay():
+    import inspect
+
+    from app.api import chat as chat_mod
+
+    source = inspect.getsource(chat_mod)
+    assert "assistant_text_after_layout_timeout" in source

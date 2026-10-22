@@ -32,6 +32,7 @@ from app.services.conversation_delete import (
     delete_conversation_cascade,
     unlink_conversation_files,
 )
+from app.services.layout_timeout import assistant_text_after_layout_timeout
 from app.services.llm_errors import user_message_for_llm_error
 from app.services.parsers.pipeline import parse_input
 from app.services.practice_json_recovery import try_recover_practice_pdf_from_assistant_text
@@ -452,6 +453,9 @@ async def chat_stream(
                 values = getattr(snap, "values", None) or {}
                 msgs = list(values.get("messages") or [])
                 out_text = _last_assistant_text(msgs) or "".join(streamed_buf)
+                timeout_text = assistant_text_after_layout_timeout(msgs)
+                if timeout_text:
+                    out_text = timeout_text
                 if not streamed_any and out_text:
                     await out_q.put(_sse({"event": "token", "data": {"t": out_text}}))
 
