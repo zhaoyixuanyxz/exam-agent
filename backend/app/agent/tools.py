@@ -21,8 +21,20 @@ from app.models.schemas import (
     StructuredPaper,
 )
 from app.services.export_markdown import build_knowledge_markdown
+from app.services.knowledge_fill import (
+    UNREADABLE_PAGE,
+    KnowledgeFillTimeout,
+    fill_missing_knowledge,
+    is_connection_timeout,
+    is_unreadable_page,
+)
 from app.services.llm_errors import humanize_known_llm_message, tool_error_user_text
-from app.services.paper_ai import analyze_knowledge, generate_practice_set, structure_paper_text
+from app.services.paper_ai import (
+    analyze_knowledge,
+    analyze_one_question,
+    generate_practice_set,
+    structure_paper_text,
+)
 from app.services.pdf_render import render_answer_pdf, render_practice_pdf
 from app.services.practice_figure_diagnostics import (
     FigureEmbedRecord,
@@ -425,6 +437,8 @@ def structure_exam_paper(paper_id: str) -> str:
         p = _get_paper(session, paper_id)
         if not p or not p.raw_text:
             return "错误：找不到试卷或尚未提取文本，请先上传 PDF/Word 或粘贴内容。"
+        if is_unreadable_page(p.raw_text):
+            return UNREADABLE_PAGE
         try:
             sp = structure_paper_text(p.raw_text)
         except Exception as e:
@@ -498,14 +512,47 @@ def run_knowledge_analysis(paper_id: str) -> str:
             ka = analyze_knowledge(summary, p.alignment_json)
         except Exception as e:
             return tool_error_user_text("考点分析失败：", e)
+
+        def ask_one(order: int, stem: str) -> KnowledgeAnalysisResult:
+            try:
+                return analyze_one_question(order, stem, p.alignment_json or {})
+            except Exception as exc:
+                if is_connection_timeout(exc):
+                    raise KnowledgeFillTimeout(
+                        KnowledgeAnalysisResult(
+                            theme_title="",
+                            knowledge_points=[],
+                            mappings=[],
+                        )
+                    ) from exc
+                raise
+
+        def write_knowledge_markdown(saved: KnowledgeAnalysisResult) -> None:
+            md_path = export_dir_for_conversation(p.conversation_id) / f"考点说明_{p.id}.md"
+            md_path.write_text(
+                build_knowledge_markdown(saved, p.alignment_json),
+                encoding="utf-8",
+            )
+            p.knowledge_markdown_path = md_path.as_posix()
+
+        pre_fill = ka
+        try:
+            ka = fill_missing_knowledge(sp, ka, ask_one)
+        except KnowledgeFillTimeout as exc:
+            p.knowledge_analysis_json = exc.analysis.model_dump()
+            write_knowledge_markdown(exc.analysis)
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("", exc)
+        except Exception as exc:
+            p.knowledge_analysis_json = pre_fill.model_dump()
+            write_knowledge_markdown(pre_fill)
+            session.add(p)
+            session.commit()
+            return tool_error_user_text("考点补全失败：", exc)
+
         p.knowledge_analysis_json = ka.model_dump()
-        conv_id = p.conversation_id
-        md_path = export_dir_for_conversation(conv_id) / f"考点说明_{p.id}.md"
-        md_path.write_text(
-            build_knowledge_markdown(ka, p.alignment_json),
-            encoding="utf-8",
-        )
-        p.knowledge_markdown_path = md_path.as_posix()
+        write_knowledge_markdown(ka)
         session.add(p)
         session.commit()
         return "成功：考点分析完成，说明文档已生成。"

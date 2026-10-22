@@ -17,6 +17,7 @@ type StructuredPayload = {
   parsed_json: Record<string, unknown> | null;
   summary: Summary;
   anomalies: string[];
+  question_knowledge?: { order_index: number; names: string[] }[];
   alignment_json: Record<string, unknown> | null;
 };
 
@@ -182,6 +183,16 @@ export function StructuredResultPanel({
           </div>
         </div>
       )}
+
+      {data?.question_knowledge?.length ? (
+        <ul className="mb-3 text-sm text-slate-800">
+          {data.question_knowledge.map((row) => (
+            <li key={row.order_index}>
+              第 {row.order_index} 题：{row.names.join("、")}
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {data?.alignment_json && (
         <p className="mb-2 text-xs text-slate-600">
