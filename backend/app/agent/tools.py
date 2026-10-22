@@ -212,7 +212,7 @@ def _generate_chunk_practice_pdf_for_kp(
     a_path = out_dir / f"practice_{safe}_answers.pdf"
     q_exists = _artifact_file_present(paper, "pdf_question", kp.key)
     a_exists = _artifact_file_present(paper, "pdf_answer", kp.key)
-    fill_only_missing = q_exists != a_exists
+    fill_only_missing = q_exists != a_exists and om == "questions_and_answers"
     skip_q = bool(fill_only_missing and q_exists)
     skip_a = bool(fill_only_missing and a_exists)
     title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"

@@ -167,6 +167,7 @@ def test_delete_artifact_endpoint_removes_list_item():
         listed2 = client.get(f"/api/conversations/{cid}/artifacts").json()["items"]
         assert all(i["id"] != art_id for i in listed2)
         with sync_session() as s:
+            assert s.get(Artifact, art_id) is None
             assert s.get(QuestionAsset, qa_id) is not None
 
 
@@ -264,6 +265,76 @@ def test_practice_regenerate_fills_only_missing_kind(tmp_path: Path):
         assert calls["q"] == 0
         assert calls["a"] == 1
         assert q_pdf.read_bytes() == b"%PDF-1.4 question"
+
+
+def test_practice_regenerate_rewrites_questions_only_when_pdf_exists(tmp_path: Path):
+    q_pdf = tmp_path / "practice_kp_a.pdf"
+    q_pdf.write_bytes(b"%PDF-1.4 question")
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="test",
+                knowledge_analysis_json={
+                    "theme_title": "t",
+                    "knowledge_points": [
+                        {
+                            "key": "kp_a",
+                            "name": "顶点式",
+                            "summary": "s",
+                            "book_chapter_hint": "",
+                        }
+                    ],
+                    "mappings": [],
+                },
+                alignment_json={"grade_min": "初三", "grade_max": "初三", "subject": "数学"},
+            )
+            s.add(paper)
+            s.flush()
+            s.add(
+                Artifact(
+                    paper_id=paper.id,
+                    kind="pdf_question",
+                    path=q_pdf.as_posix(),
+                    knowledge_point_key="kp_a",
+                )
+            )
+            s.commit()
+            paper_id = paper.id
+        calls = {"q": 0, "a": 0}
+
+        def fake_q(*_a, **_k):
+            calls["q"] += 1
+
+        def fake_a(*_a, **_k):
+            calls["a"] += 1
+
+        with (
+            patch("app.agent.tools.generate_practice_set") as gen,
+            patch("app.agent.tools.render_practice_pdf", side_effect=fake_q),
+            patch("app.agent.tools.render_answer_pdf", side_effect=fake_a),
+            patch("app.agent.tools.export_dir_for_conversation", return_value=tmp_path),
+        ):
+            gen.return_value = type("P", (), {"knowledge_point_key": "", "knowledge_point_name": ""})()
+            with sync_session() as s:
+                paper = s.get(ExamPaper, paper_id)
+                kp = KnowledgePointItem(key="kp_a", name="顶点式", summary="s", book_chapter_hint="")
+                err = _generate_chunk_practice_pdf_for_kp(
+                    s,
+                    paper,
+                    kp,
+                    10,
+                    use_original_figures=False,
+                    include_figures=True,
+                    difficulty="medium",
+                    question_types_json="[]",
+                    output_mode="questions_only",
+                )
+                assert err is None
+                s.commit()
+        assert calls["q"] == 1
+        assert calls["a"] == 0
 
 
 def test_run_knowledge_analysis_clears_hidden_flag(monkeypatch):
