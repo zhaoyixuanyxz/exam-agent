@@ -6,6 +6,9 @@ import re
 EMPTY_SUGGEST_MESSAGE = "请按套填写页码"
 CONFIRM_BLOCKED_NEEDED = "请先确认合订本分套（或选择按单套继续），再确认结构化。"
 CONFIRM_BLOCKED_DONE = "该材料为已切开的合订本原件，请对切开后的各套确认结构化。"
+ANTHOLOGY_PARENT_DONE_TOOLS = (
+    "该材料为已切开的合订本原件，请改选切开后的子材料再出考点/练习。"
+)
 
 _YEAR_LINE = re.compile(
     r"(?P<year>20[0-9]{2})\s*年?.{0,24}(中考|期末|一模|二模|三模|月考|调研)",
@@ -63,4 +66,11 @@ def confirm_blocked_message(status: str | None) -> str | None:
         return CONFIRM_BLOCKED_NEEDED
     if s == "done":
         return CONFIRM_BLOCKED_DONE
+    return None
+
+
+def refuse_if_anthology_parent_done(status: str | None) -> str | None:
+    s = (status or "none").strip() or "none"
+    if s == "done":
+        return ANTHOLOGY_PARENT_DONE_TOOLS
     return None

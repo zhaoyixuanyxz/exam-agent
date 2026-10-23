@@ -1,9 +1,11 @@
 from app.services.anthology_ranges import (
+    ANTHOLOGY_PARENT_DONE_TOOLS,
     EMPTY_SUGGEST_MESSAGE,
     CONFIRM_BLOCKED_NEEDED,
     CONFIRM_BLOCKED_DONE,
     suggest_ranges_from_page_texts,
     confirm_blocked_message,
+    refuse_if_anthology_parent_done,
 )
 
 
@@ -45,3 +47,12 @@ def test_confirm_blocked_message():
     assert confirm_blocked_message("done") == CONFIRM_BLOCKED_DONE
     assert confirm_blocked_message("none") is None
     assert confirm_blocked_message("single_ok") is None
+
+
+def test_refuse_if_anthology_parent_done():
+    assert refuse_if_anthology_parent_done("done") == ANTHOLOGY_PARENT_DONE_TOOLS
+    assert refuse_if_anthology_parent_done("needed") is None
+    assert refuse_if_anthology_parent_done("none") is None
+    assert refuse_if_anthology_parent_done("single_ok") is None
+    assert refuse_if_anthology_parent_done(None) is None
+    assert "子材料" in ANTHOLOGY_PARENT_DONE_TOOLS
