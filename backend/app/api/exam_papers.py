@@ -4,20 +4,75 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
+import fitz
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ExamPaper
 from app.db.session import get_session
+from app.services.anthology_ranges import suggest_ranges_from_page_texts
 from app.services.parsers.pdf_pages import parse_pdf_page_range_text, pdf_page_count
 
 router = APIRouter(prefix="/api", tags=["exam-papers"])
 
 
+class ConversationIdBody(BaseModel):
+    conversation_id: str = Field(..., min_length=1)
+
+
 class SplitByPagesBody(BaseModel):
     conversation_id: str = Field(..., min_length=1)
     ranges: list[list[int]] = Field(..., min_length=1)
+
+
+@router.post("/exam-papers/{paper_id}/anthology-split/mark-needed")
+async def mark_anthology_needed(
+    paper_id: str,
+    body: ConversationIdBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != body.conversation_id:
+        raise HTTPException(404, "试卷不存在或不属于该会话")
+    if (p.anthology_split_status or "") == "done":
+        raise HTTPException(400, "该合订本已切开，请对子材料操作。")
+    p.anthology_split_status = "needed"
+    await session.commit()
+    return {"ok": True, "anthology_split_status": "needed"}
+
+
+@router.post("/exam-papers/{paper_id}/suggest-page-ranges")
+async def suggest_page_ranges(
+    paper_id: str,
+    body: ConversationIdBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != body.conversation_id:
+        raise HTTPException(404, "试卷不存在或不属于该会话")
+    if not p.raw_path:
+        raise HTTPException(400, "该材料无本地 PDF 路径")
+    path = Path(p.raw_path)
+    if path.suffix.lower() != ".pdf" or not path.is_file():
+        raise HTTPException(400, "仅支持已上传且存在的 PDF 文件")
+    try:
+        doc = fitz.open(path.as_posix())
+        try:
+            texts = [
+                (doc.load_page(i).get_text("text") or "") for i in range(doc.page_count)
+            ]
+        finally:
+            doc.close()
+    except Exception as e:
+        raise HTTPException(400, f"无法读取 PDF：{e!s}") from e
+    ranges, labels, message = suggest_ranges_from_page_texts(texts)
+    return {
+        "ranges": ranges,
+        "labels": labels,
+        "message": message,
+        "page_count": len(texts),
+    }
 
 
 @router.post("/exam-papers/{paper_id}/split-by-pages")

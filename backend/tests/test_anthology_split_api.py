@@ -15,7 +15,7 @@ def _pdf(tmp: Path, pages: list[str]) -> Path:
     try:
         for t in pages:
             pg = doc.new_page()
-            pg.insert_text((72, 72), t)
+            pg.insert_text((72, 72), t, fontname="china-s")
         doc.save(p.as_posix())
     finally:
         doc.close()
@@ -107,3 +107,40 @@ def test_single_ok_allows_confirm(tmp_path: Path):
         assert r.json()["anthology_split_status"] == "single_ok"
         r2 = client.post(f"/api/conversations/{cid}/papers/{pid}/structured/confirm")
         assert r2.status_code == 200
+
+
+def test_suggest_page_ranges_and_mark_needed(tmp_path: Path):
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _pdf(
+            tmp_path,
+            [
+                "2021年广州市中考数学",
+                "题",
+                "2022年广州市中考数学",
+                "题",
+            ],
+        )
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                raw_path=pdf.as_posix(),
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(
+            f"/api/exam-papers/{pid}/anthology-split/mark-needed",
+            json={"conversation_id": cid},
+        )
+        assert r.status_code == 200
+        assert r.json()["anthology_split_status"] == "needed"
+        sgg = client.post(
+            f"/api/exam-papers/{pid}/suggest-page-ranges",
+            json={"conversation_id": cid},
+        )
+        assert sgg.status_code == 200
+        body = sgg.json()
+        assert len(body["ranges"]) >= 2
+        assert len(body["labels"]) == len(body["ranges"])
