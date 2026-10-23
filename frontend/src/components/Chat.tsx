@@ -87,8 +87,11 @@ export function Chat({
   const [v2Tick, setV2Tick] = useState(0);
   const [clientStreamErrorHint, setClientStreamErrorHint] = useState<string | null>(null);
   const [splitRanges, setSplitRanges] = useState("");
+  const [splitLabels, setSplitLabels] = useState<string[]>([]);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
+  const [uncoveredHint, setUncoveredHint] = useState<string | null>(null);
+  const autoSuggestForRef = useRef<string | null>(null);
   const [practiceConfig, setPracticeConfig] = useState<PracticeGenerateConfig>(() => ({
     ...defaultPracticeConfig,
   }));
@@ -234,6 +237,74 @@ export function Chat({
       targetPaperId,
     ],
   );
+
+  const applySuggestToForm = useCallback(
+    (ranges: number[][], labels: string[], message?: string) => {
+      setUncoveredHint(null);
+      if (ranges.length > 0) {
+        setSplitRanges(ranges.map(([a, b]) => `${a}-${b}`).join(", "));
+        setSplitLabels(labels.length === ranges.length ? labels : []);
+      } else {
+        setSplitRanges("");
+        setSplitLabels([]);
+      }
+      if (message) setSplitNote(message);
+    },
+    [],
+  );
+
+  const runSuggestForPaper = useCallback(
+    async (paperId: string, opts?: { markNeeded?: boolean }) => {
+      setSplitBusy(true);
+      setSplitNote(null);
+      try {
+        if (opts?.markNeeded) {
+          const mk = await fetch(`${API}/api/exam-papers/${paperId}/anthology-split/mark-needed`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ conversation_id: conversationId }),
+          });
+          const mj = await mk.json().catch(() => ({}));
+          if (!mk.ok) {
+            setSplitNote(typeof mj.detail === "string" ? mj.detail : "标记合订本失败");
+            return;
+          }
+        }
+        const sgg = await fetch(`${API}/api/exam-papers/${paperId}/suggest-page-ranges`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: conversationId }),
+        });
+        const body = await sgg.json().catch(() => ({}));
+        if (!sgg.ok) {
+          setSplitNote(typeof body.detail === "string" ? body.detail : "建议页码失败，请手填");
+          applySuggestToForm([], []);
+          return;
+        }
+        applySuggestToForm(
+          (body.ranges as number[][]) || [],
+          (body.labels as string[]) || [],
+          (body.message as string) || undefined,
+        );
+        await loadPapers();
+        setV2Tick((t) => t + 1);
+      } catch {
+        setSplitNote("网络错误，请重试。");
+      } finally {
+        setSplitBusy(false);
+      }
+    },
+    [applySuggestToForm, conversationId, loadPapers],
+  );
+
+  useEffect(() => {
+    const p = papers.find((x) => x.id === targetPaperId);
+    const st = (p?.anthology_split_status || "none").trim() || "none";
+    if (!targetPaperId || st !== "needed" || splitRanges.trim()) return;
+    if (autoSuggestForRef.current === targetPaperId) return;
+    autoSuggestForRef.current = targetPaperId;
+    void runSuggestForPaper(targetPaperId);
+  }, [papers, targetPaperId, splitRanges, runSuggestForPaper]);
 
   const splitTarget = useMemo(() => {
     const pdf = papers.filter((x) => (x.raw_path ?? "").trim().toLowerCase().endsWith(".pdf"));
@@ -632,17 +703,69 @@ export function Chat({
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/90 p-3 text-xs text-slate-600">
           <div className="font-medium text-slate-800">
             按页拆分 PDF（目标材料 id：{splitTarget.id.slice(0, 8)}…）
+            {(splitTarget.anthology_split_status || "none") !== "none" ? (
+              <span className="ml-2 font-normal text-amber-800">
+                · 合订状态 {splitTarget.anthology_split_status}
+              </span>
+            ) : null}
           </div>
           <p className="mt-1">
             用逗号分隔多个区间，如 <span className="rounded bg-white px-1 font-mono">1-3, 5-7</span>
-            （从 1 起算，闭区间）。拆分后生成新材料；后续对话默认仍绑定当前轮次的 paper_id，请在消息里说明要用的材料 id。
+            （从 1 起算，闭区间）。合订本请先点「这是合订本」预填建议页码后再改、再拆分。
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={splitBusy || (splitTarget.anthology_split_status || "") === "done"}
+              className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-1 text-violet-950 hover:bg-violet-100 disabled:opacity-50"
+              onClick={() => void runSuggestForPaper(splitTarget.id, { markNeeded: true })}
+            >
+              这是合订本
+            </button>
+            {(splitTarget.anthology_split_status || "") === "needed" ? (
+              <button
+                type="button"
+                disabled={splitBusy}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                onClick={() =>
+                  void (async () => {
+                    setSplitBusy(true);
+                    setSplitNote(null);
+                    try {
+                      const res = await fetch(
+                        `${API}/api/conversations/${conversationId}/papers/${splitTarget.id}/anthology-split/single-ok`,
+                        { method: "POST" },
+                      );
+                      const j = await res.json().catch(() => ({}));
+                      if (!res.ok) {
+                        setSplitNote(typeof j.detail === "string" ? j.detail : "按单套继续失败");
+                        return;
+                      }
+                      setSplitNote("已按单套继续，可确认结构化。");
+                      await loadPapers();
+                      setV2Tick((t) => t + 1);
+                      onConversationActivity?.();
+                    } catch {
+                      setSplitNote("网络错误，请重试。");
+                    } finally {
+                      setSplitBusy(false);
+                    }
+                  })()
+                }
+              >
+                按单套继续
+              </button>
+            ) : null}
+          </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               className="min-w-[180px] flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono"
               placeholder="例：1-4, 5-10"
               value={splitRanges}
-              onChange={(e) => setSplitRanges(e.target.value)}
+              onChange={(e) => {
+                setSplitRanges(e.target.value);
+                setSplitLabels([]);
+              }}
               disabled={splitBusy}
             />
             <button
@@ -651,6 +774,7 @@ export function Chat({
               className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-1 text-sky-900 hover:bg-sky-100 disabled:opacity-50"
               onClick={() => void (async () => {
                 setSplitNote(null);
+                setUncoveredHint(null);
                 const ranges = parsePageRanges(splitRanges);
                 if (!ranges) {
                   setSplitNote("页码格式不对，请使用 起始-结束，多个用逗号分隔。");
@@ -658,15 +782,23 @@ export function Chat({
                 }
                 setSplitBusy(true);
                 try {
+                  const payload: {
+                    conversation_id: string;
+                    ranges: number[][];
+                    labels?: string[];
+                  } = {
+                    conversation_id: conversationId,
+                    ranges,
+                  };
+                  if (splitLabels.length === ranges.length && splitLabels.length > 0) {
+                    payload.labels = splitLabels;
+                  }
                   const res = await fetch(
                     `${API}/api/exam-papers/${splitTarget.id}/split-by-pages`,
                     {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        conversation_id: conversationId,
-                        ranges,
-                      }),
+                      body: JSON.stringify(payload),
                     },
                   );
                   const j = await res.json().catch(() => ({}));
@@ -688,12 +820,23 @@ export function Chat({
                     return;
                   }
                   const ids = (j.new_papers || []) as { id: string; label?: string }[];
+                  const first = ids[0];
                   const idLine = ids.map((x) => `${x.label ?? "新材料"}: ${x.id.slice(0, 8)}…`).join("；");
+                  const hint = String((j.uncovered_pages_hint as string) || "").trim();
+                  const firstLabel = (first?.label || "").trim() || "第一套";
                   setSplitNote(
-                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
+                    first
+                      ? `拆分完成。已选第一套（${firstLabel}），请拆题并确认后出考点说明。新材料：${idLine}`
+                      : `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
                   );
+                  setUncoveredHint(hint || null);
                   setSplitRanges("");
+                  setSplitLabels([]);
+                  autoSuggestForRef.current = null;
                   await loadPapers();
+                  if (first?.id) {
+                    setTargetPaperId(first.id);
+                  }
                   onConversationActivity?.();
                 } catch {
                   setSplitNote("网络错误，请重试。");
@@ -705,7 +848,18 @@ export function Chat({
               {splitBusy ? "拆分中…" : "拆分"}
             </button>
           </div>
-          {splitNote && <p className="mt-2 whitespace-pre-wrap text-emerald-900">{splitNote}</p>}
+          {splitNote && (
+            <p
+              className={`mt-2 whitespace-pre-wrap ${
+                splitNote.includes("请按套") ? "text-amber-900" : "text-emerald-900"
+              }`}
+            >
+              {splitNote}
+            </p>
+          )}
+          {uncoveredHint && (
+            <p className="mt-1 whitespace-pre-wrap text-amber-900">{uncoveredHint}</p>
+          )}
         </div>
       )}
 

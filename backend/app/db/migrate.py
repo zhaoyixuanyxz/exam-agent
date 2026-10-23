@@ -132,3 +132,17 @@ def apply_sqlite_question_assets_v23_columns(connection: Connection) -> None:
         )
     except Exception:
         pass
+
+
+def apply_sqlite_exam_paper_anthology_split_status(connection: Connection) -> None:
+    insp = inspect(connection)
+    if not insp.has_table("exam_papers"):
+        return
+    cols = {c["name"] for c in insp.get_columns("exam_papers")}
+    if "anthology_split_status" not in cols:
+        connection.execute(
+            text(
+                "ALTER TABLE exam_papers ADD COLUMN anthology_split_status "
+                "VARCHAR(32) DEFAULT 'none'"
+            )
+        )

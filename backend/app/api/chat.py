@@ -27,6 +27,7 @@ from app.models.schemas import StructuredPaper
 from app.db.session import SessionLocal, get_session
 from app.db.sync_session import sync_session
 from app.services.agent_thread_repair import repair_dangling_tool_calls
+from app.services.anthology_ranges import confirm_blocked_message
 from app.services.conversation_delete import (
     collect_conversation_file_paths,
     delete_conversation_cascade,
@@ -682,6 +683,8 @@ async def list_conversation_papers(
                 "raw_path": p.raw_path,
                 "display_name": p.display_name,
                 "structured_confirm_status": effective_structured_status(p),
+                "anthology_split_status": getattr(p, "anthology_split_status", None)
+                or "none",
                 "last_practice_config": p.last_practice_config_json
                 if isinstance(p.last_practice_config_json, dict)
                 else None,
@@ -742,10 +745,17 @@ async def get_paper_structured(
             )
         except Exception:
             point_rows = []
+    anoms = list_anomalies(p.parsed_json)
+    st_anth = (getattr(p, "anthology_split_status", None) or "none").strip() or "none"
+    if st_anth == "none" and any("order_index 重复" in a for a in anoms):
+        p.anthology_split_status = "needed"
+        await session.commit()
+        st_anth = "needed"
     return {
         "paper_id": p.id,
         "display_name": p.display_name,
         "structured_confirm_status": st,
+        "anthology_split_status": st_anth,
         "structured_version": int(p.structured_version or 0),
         "structured_confirmed_at": p.structured_confirmed_at.isoformat()
         if p.structured_confirmed_at
@@ -755,7 +765,7 @@ async def get_paper_structured(
         else None,
         "parsed_json": p.parsed_json,
         "summary": summary,
-        "anomalies": list_anomalies(p.parsed_json),
+        "anomalies": anoms,
         "question_knowledge": point_rows,
         "alignment_json": p.alignment_json,
     }
@@ -791,6 +801,28 @@ async def patch_paper_structured(
     }
 
 
+@router.post(
+    "/conversations/{conversation_id}/papers/{paper_id}/anthology-split/single-ok"
+)
+async def post_anthology_single_ok(
+    conversation_id: str,
+    paper_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    st = (p.anthology_split_status or "none").strip() or "none"
+    if st != "needed":
+        raise HTTPException(400, "仅待分套材料可选择按单套继续。")
+    p.anthology_split_status = "single_ok"
+    await session.commit()
+    return {"ok": True, "anthology_split_status": p.anthology_split_status}
+
+
 @router.post("/conversations/{conversation_id}/papers/{paper_id}/structured/confirm")
 async def post_confirm_structured(
     conversation_id: str,
@@ -809,6 +841,9 @@ async def post_confirm_structured(
         StructuredPaper.model_validate(p.parsed_json)
     except Exception as e:
         raise HTTPException(400, f"当前结构化数据仍无法通过校验，无法确认：{e!s}") from e
+    block = confirm_blocked_message(getattr(p, "anthology_split_status", None))
+    if block:
+        raise HTTPException(400, block)
     if list_anomalies(p.parsed_json):
         # 允许带警告仍确认，由产品决定；此处仅阻止「无法解析」类已在 validate 处理
         pass
