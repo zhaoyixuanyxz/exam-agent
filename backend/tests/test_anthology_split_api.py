@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.db.models import ExamPaper
 from app.db.sync_session import sync_session
 from app.main import app
+from app.services.anthology_ranges import CONFIRM_BLOCKED_NEEDED
 
 
 def _pdf(tmp: Path, pages: list[str]) -> Path:
@@ -53,9 +54,20 @@ def test_confirm_blocked_when_needed(tmp_path: Path):
             s.add(paper)
             s.commit()
             pid = paper.id
+        list_r = client.get(f"/api/conversations/{cid}/papers")
+        assert list_r.status_code == 200
+        papers = list_r.json()["papers"]
+        assert len(papers) == 1
+        assert papers[0]["id"] == pid
+        assert papers[0]["anthology_split_status"] == "needed"
+
+        struct_r = client.get(f"/api/conversations/{cid}/papers/{pid}/structured")
+        assert struct_r.status_code == 200
+        assert struct_r.json()["anthology_split_status"] == "needed"
+
         r = client.post(f"/api/conversations/{cid}/papers/{pid}/structured/confirm")
         assert r.status_code == 400
-        assert "分套" in r.json()["detail"]
+        assert CONFIRM_BLOCKED_NEEDED in r.json()["detail"]
 
 
 def test_single_ok_allows_confirm(tmp_path: Path):
