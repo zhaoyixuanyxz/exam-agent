@@ -230,3 +230,35 @@ def test_split_sets_parent_done_and_labels(tmp_path: Path, monkeypatch):
             child = s.get(ExamPaper, body["new_papers"][0]["id"])
             assert child.display_name == "2021年试卷"
             assert (child.anthology_split_status or "none") == "none"
+
+
+def test_get_structured_marks_needed_on_duplicate_order_index():
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                anthology_split_status="none",
+                parsed_json={
+                    "title": "合订",
+                    "sections": [
+                        {
+                            "title": "一",
+                            "questions": [
+                                {"order_index": 1, "qtype": "填空", "stem": "a", "options": [], "blocks": []},
+                                {"order_index": 1, "qtype": "填空", "stem": "b", "options": [], "blocks": []},
+                            ],
+                        }
+                    ],
+                },
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.get(f"/api/conversations/{cid}/papers/{pid}/structured")
+        assert r.status_code == 200
+        assert any("重复" in a for a in r.json()["anomalies"])
+        assert r.json()["anthology_split_status"] == "needed"
+        with sync_session() as s:
+            assert s.get(ExamPaper, pid).anthology_split_status == "needed"

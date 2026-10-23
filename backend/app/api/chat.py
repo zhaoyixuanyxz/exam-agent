@@ -745,11 +745,17 @@ async def get_paper_structured(
             )
         except Exception:
             point_rows = []
+    anoms = list_anomalies(p.parsed_json)
+    st_anth = (getattr(p, "anthology_split_status", None) or "none").strip() or "none"
+    if st_anth == "none" and any("order_index 重复" in a for a in anoms):
+        p.anthology_split_status = "needed"
+        await session.commit()
+        st_anth = "needed"
     return {
         "paper_id": p.id,
         "display_name": p.display_name,
         "structured_confirm_status": st,
-        "anthology_split_status": getattr(p, "anthology_split_status", None) or "none",
+        "anthology_split_status": st_anth,
         "structured_version": int(p.structured_version or 0),
         "structured_confirmed_at": p.structured_confirmed_at.isoformat()
         if p.structured_confirmed_at
@@ -759,7 +765,7 @@ async def get_paper_structured(
         else None,
         "parsed_json": p.parsed_json,
         "summary": summary,
-        "anomalies": list_anomalies(p.parsed_json),
+        "anomalies": anoms,
         "question_knowledge": point_rows,
         "alignment_json": p.alignment_json,
     }
