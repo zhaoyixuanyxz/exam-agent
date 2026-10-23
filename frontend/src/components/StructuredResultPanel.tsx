@@ -13,6 +13,7 @@ type StructuredPayload = {
   paper_id: string;
   display_name: string | null;
   structured_confirm_status: string;
+  anthology_split_status?: string;
   structured_version: number;
   parsed_json: Record<string, unknown> | null;
   summary: Summary;
@@ -217,7 +218,33 @@ export function StructuredResultPanel({
         状态：{" "}
         <span className="font-mono text-slate-800">{data?.structured_confirm_status ?? "—"}</span>{" "}
         · 版本 {data?.structured_version ?? 0}
+        {data?.anthology_split_status && data.anthology_split_status !== "none" ? (
+          <>
+            {" "}
+            · 合订：
+            <span className="font-mono text-slate-800">{data.anthology_split_status}</span>
+          </>
+        ) : null}
       </p>
+
+      {(() => {
+        const anth = data?.anthology_split_status ?? "none";
+        if (anth === "needed") {
+          return (
+            <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-950">
+              请先确认合订本分套（或选择按单套继续），再确认结构化。
+            </p>
+          );
+        }
+        if (anth === "done") {
+          return (
+            <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-950">
+              该材料为已切开的合订本原件，请对切开后的各套确认结构化。
+            </p>
+          );
+        }
+        return null;
+      })()}
 
       <label className="mb-1 block text-xs text-slate-500">structured JSON（高级编辑）</label>
       <textarea
@@ -240,7 +267,12 @@ export function StructuredResultPanel({
         </button>
         <button
           type="button"
-          disabled={confirming || (data?.structured_confirm_status === "confirmed")}
+          disabled={
+            confirming ||
+            data?.structured_confirm_status === "confirmed" ||
+            data?.anthology_split_status === "needed" ||
+            data?.anthology_split_status === "done"
+          }
           onClick={() => void confirm()}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-50"
         >
