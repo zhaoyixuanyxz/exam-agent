@@ -232,6 +232,34 @@ def test_split_sets_parent_done_and_labels(tmp_path: Path, monkeypatch):
             assert (child.anthology_split_status or "none") == "none"
 
 
+def test_split_leaves_none_parent_status(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.vision_read.read_image_text",
+        lambda _b: "足够中文文本一二三四",
+    )
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _pdf(tmp_path, ["page one text enough", "page two text enough"])
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                raw_path=pdf.as_posix(),
+                anthology_split_status="none",
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(
+            f"/api/exam-papers/{pid}/split-by-pages",
+            json={"conversation_id": cid, "ranges": [[1, 1], [2, 2]]},
+        )
+        assert r.status_code == 200
+        with sync_session() as s:
+            parent = s.get(ExamPaper, pid)
+            assert (parent.anthology_split_status or "none") == "none"
+
+
 def test_get_structured_marks_needed_on_duplicate_order_index():
     with TestClient(app) as client:
         cid = client.post("/api/conversations").json()["conversation_id"]

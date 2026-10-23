@@ -146,7 +146,9 @@ async def split_exam_paper_by_pages(
         )
         covered.update(range(a, b + 1))
 
-    p.anthology_split_status = "done"
+    # 仅合订待分套切开后标记父材料 done；普通按页拆分不得永久挡确认
+    if (getattr(p, "anthology_split_status", None) or "none").strip() == "needed":
+        p.anthology_split_status = "done"
     missing = [i for i in range(1, total + 1) if i not in covered]
     hint = ""
     if missing:
