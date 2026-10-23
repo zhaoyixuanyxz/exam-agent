@@ -20,6 +20,7 @@ from app.models.schemas import (
     PracticeSet,
     StructuredPaper,
 )
+from app.services.anthology_ranges import refuse_if_anthology_parent_done
 from app.services.export_markdown import build_knowledge_markdown
 from app.services.knowledge_fill import (
     UNREADABLE_PAGE,
@@ -582,7 +583,14 @@ def run_knowledge_analysis(paper_id: str) -> str:
     """结合结构化试卷与对齐标签，生成考点归类与 Markdown 文件路径。"""
     with sync_session() as session:
         p = _get_paper(session, paper_id)
-        if not p or not p.parsed_json:
+        if not p:
+            return "请先 structure_exam_paper。"
+        blocked = refuse_if_anthology_parent_done(
+            getattr(p, "anthology_split_status", None)
+        )
+        if blocked:
+            return blocked
+        if not p.parsed_json:
             return "请先 structure_exam_paper。"
         st = (p.structured_confirm_status or "none").strip() or "none"
         if st != "confirmed":
@@ -702,7 +710,14 @@ def generate_chunk_practice_pdf(
     output_mode：questions_and_answers（题目+答案）或 questions_only（仅题目）。"""
     with sync_session() as session:
         p = _get_paper(session, paper_id)
-        if not p or not p.knowledge_analysis_json:
+        if not p:
+            return "请先完成考点分析。"
+        blocked = refuse_if_anthology_parent_done(
+            getattr(p, "anthology_split_status", None)
+        )
+        if blocked:
+            return blocked
+        if not p.knowledge_analysis_json:
             return "请先完成考点分析。"
         ka = KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
         kp = _resolve_knowledge_point(ka, knowledge_point_key)
@@ -741,7 +756,14 @@ def generate_chunk_practice_pdfs_batch(
     cap = max(1, int(settings.practice_batch_max_knowledge_points))
     with sync_session() as session:
         p = _get_paper(session, paper_id)
-        if not p or not p.knowledge_analysis_json:
+        if not p:
+            return "请先完成考点分析。"
+        blocked = refuse_if_anthology_parent_done(
+            getattr(p, "anthology_split_status", None)
+        )
+        if blocked:
+            return blocked
+        if not p.knowledge_analysis_json:
             return "请先完成考点分析。"
         try:
             raw_items = json.loads(items_json)
@@ -797,7 +819,14 @@ def generate_all_practice_pdfs(paper_id: str) -> str:
     出题选项与单考点工具的默认值相同，并合并该卷已保存的练习配置。"""
     with sync_session() as session:
         paper = _get_paper(session, paper_id)
-        if not paper or not paper.knowledge_analysis_json:
+        if not paper:
+            return "请先完成考点分析。"
+        blocked = refuse_if_anthology_parent_done(
+            getattr(paper, "anthology_split_status", None)
+        )
+        if blocked:
+            return blocked
+        if not paper.knowledge_analysis_json:
             return "请先完成考点分析。"
         ka = KnowledgeAnalysisResult.model_validate(paper.knowledge_analysis_json)
         points = [(item.key, item.name) for item in ka.knowledge_points]
