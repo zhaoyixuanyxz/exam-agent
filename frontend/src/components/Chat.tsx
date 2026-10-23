@@ -90,6 +90,7 @@ export function Chat({
   const [splitLabels, setSplitLabels] = useState<string[]>([]);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
+  const [uncoveredHint, setUncoveredHint] = useState<string | null>(null);
   const autoSuggestForRef = useRef<string | null>(null);
   const [practiceConfig, setPracticeConfig] = useState<PracticeGenerateConfig>(() => ({
     ...defaultPracticeConfig,
@@ -239,6 +240,7 @@ export function Chat({
 
   const applySuggestToForm = useCallback(
     (ranges: number[][], labels: string[], message?: string) => {
+      setUncoveredHint(null);
       if (ranges.length > 0) {
         setSplitRanges(ranges.map(([a, b]) => `${a}-${b}`).join(", "));
         setSplitLabels(labels.length === ranges.length ? labels : []);
@@ -772,6 +774,7 @@ export function Chat({
               className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-1 text-sky-900 hover:bg-sky-100 disabled:opacity-50"
               onClick={() => void (async () => {
                 setSplitNote(null);
+                setUncoveredHint(null);
                 const ranges = parsePageRanges(splitRanges);
                 if (!ranges) {
                   setSplitNote("页码格式不对，请使用 起始-结束，多个用逗号分隔。");
@@ -818,10 +821,11 @@ export function Chat({
                   }
                   const ids = (j.new_papers || []) as { id: string; label?: string }[];
                   const idLine = ids.map((x) => `${x.label ?? "新材料"}: ${x.id.slice(0, 8)}…`).join("；");
-                  const hint = (j.uncovered_pages_hint as string) || "";
+                  const hint = String((j.uncovered_pages_hint as string) || "").trim();
                   setSplitNote(
-                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}${hint ? `\n${hint}` : ""}`,
+                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
                   );
+                  setUncoveredHint(hint || null);
                   setSplitRanges("");
                   setSplitLabels([]);
                   autoSuggestForRef.current = null;
@@ -840,13 +844,14 @@ export function Chat({
           {splitNote && (
             <p
               className={`mt-2 whitespace-pre-wrap ${
-                splitNote.includes("未纳入") || splitNote.includes("请按套")
-                  ? "text-amber-900"
-                  : "text-emerald-900"
+                splitNote.includes("请按套") ? "text-amber-900" : "text-emerald-900"
               }`}
             >
               {splitNote}
             </p>
+          )}
+          {uncoveredHint && (
+            <p className="mt-1 whitespace-pre-wrap text-amber-900">{uncoveredHint}</p>
           )}
         </div>
       )}
