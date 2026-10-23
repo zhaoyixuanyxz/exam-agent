@@ -142,5 +142,50 @@ def test_suggest_page_ranges_and_mark_needed(tmp_path: Path):
         )
         assert sgg.status_code == 200
         body = sgg.json()
-        assert len(body["ranges"]) >= 2
-        assert len(body["labels"]) == len(body["ranges"])
+        assert body["ranges"] == [[1, 2], [3, 4]]
+        assert body["labels"] == ["2021年试卷", "2022年试卷"]
+        assert body["message"] == ""
+        assert body["page_count"] == 4
+
+
+def test_mark_needed_rejects_when_done(tmp_path: Path):
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _pdf(tmp_path, ["2021年中考", "x"])
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                raw_path=pdf.as_posix(),
+                anthology_split_status="done",
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(
+            f"/api/exam-papers/{pid}/anthology-split/mark-needed",
+            json={"conversation_id": cid},
+        )
+        assert r.status_code == 400
+        assert "已切开" in r.json()["detail"]
+
+
+def test_suggest_wrong_conversation_returns_404(tmp_path: Path):
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        other_cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _pdf(tmp_path, ["2021年广州市中考数学", "题", "2022年广州市中考数学", "题"])
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                raw_path=pdf.as_posix(),
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(
+            f"/api/exam-papers/{pid}/suggest-page-ranges",
+            json={"conversation_id": other_cid},
+        )
+        assert r.status_code == 404
