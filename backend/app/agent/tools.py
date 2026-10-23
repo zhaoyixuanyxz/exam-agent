@@ -23,6 +23,7 @@ from app.models.schemas import (
 from app.services.export_markdown import build_knowledge_markdown
 from app.services.knowledge_fill import (
     UNREADABLE_PAGE,
+    KnowledgeFillFailed,
     KnowledgeFillTimeout,
     fill_missing_knowledge,
     is_connection_timeout,
@@ -344,11 +345,10 @@ def store_drafted_practice(
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in kp.key)[:80]
     q_path = out_dir / f"practice_{safe}.pdf"
     a_path = out_dir / f"practice_{safe}_answers.pdf"
-    q_exists = _artifact_file_present(paper, "pdf_question", kp.key)
-    a_exists = _artifact_file_present(paper, "pdf_answer", kp.key)
-    fill_only_missing = q_exists != a_exists and om == "questions_and_answers"
-    skip_q = bool(fill_only_missing and q_exists)
-    skip_a = bool(fill_only_missing and a_exists)
+    # Always rewrite both halves of a Q+A pair from the same PracticeSet so
+    # a deleted answer (or question) cannot be paired with a leftover mismatch.
+    skip_q = False
+    skip_a = False
     title = f"{align.get('grade_min', '')} {subject} · {kp.name} · 分块练习"
     diag_practice: list[FigureEmbedRecord] = []
     diag_answers: list[FigureEmbedRecord] = []
@@ -625,20 +625,23 @@ def run_knowledge_analysis(paper_id: str) -> str:
             )
             p.knowledge_markdown_path = md_path.as_posix()
 
-        pre_fill = ka
         try:
             ka = fill_missing_knowledge(sp, ka, ask_one)
         except KnowledgeFillTimeout as exc:
             p.knowledge_analysis_json = exc.analysis.model_dump()
             write_knowledge_markdown(exc.analysis)
+            p.knowledge_explanation_hidden = False
             session.add(p)
             session.commit()
             return tool_error_user_text("", exc)
-        except Exception as exc:
-            p.knowledge_analysis_json = pre_fill.model_dump()
-            write_knowledge_markdown(pre_fill)
+        except KnowledgeFillFailed as exc:
+            p.knowledge_analysis_json = exc.analysis.model_dump()
+            write_knowledge_markdown(exc.analysis)
+            p.knowledge_explanation_hidden = False
             session.add(p)
             session.commit()
+            return tool_error_user_text("考点补全失败：", exc.cause)
+        except Exception as exc:
             return tool_error_user_text("考点补全失败：", exc)
 
         p.knowledge_analysis_json = ka.model_dump()
@@ -844,15 +847,25 @@ def generate_all_practice_pdfs(paper_id: str) -> str:
                     config_extra=None,
                 )
                 if err:
+                    if err == TIMEOUT_MESSAGE:
+                        raise PracticeFillTimeout(stored_keys)
                     raise RuntimeError(err)
 
-            return generate_one_for_tool(key, name, draft=draft, store=store)
+            return generate_one_for_tool(
+                key,
+                name,
+                draft=draft,
+                store=store,
+                include_figures=ctx.include_figures,
+            )
 
         try:
             fill_practice_pdfs(points, stored_keys, generate_one)
         except PracticeFillTimeout as exc:
             return tool_error_user_text("", exc)
         except Exception as exc:
+            if str(exc) == TIMEOUT_MESSAGE or getattr(exc, "args", None) == (TIMEOUT_MESSAGE,):
+                return TIMEOUT_MESSAGE
             return tool_error_user_text("出题失败：", exc)
         return "成功：练习卷已入库，每个考点一份。"
 

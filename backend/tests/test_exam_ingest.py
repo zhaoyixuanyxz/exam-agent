@@ -97,6 +97,13 @@ def test_extract_exam_text_rejects_pdf_mixed_with_images(tmp_path: Path):
     assert MIXED_UPLOAD_MESSAGE == "请分开交"
 
 
+def test_extract_exam_text_rejects_multiple_pdfs(tmp_path: Path):
+    a = _pdf_with_text(tmp_path / "a.pdf", "第一题")
+    b = _pdf_with_text(tmp_path / "b.pdf", "第二题")
+    with pytest.raises(ValueError, match="请分开交"):
+        extract_exam_text([a, b], read_image_text=lambda _b: "x")
+
+
 def test_extract_exam_text_rejects_doc(tmp_path: Path):
     p = tmp_path / "old.doc"
     p.write_bytes(b"x")

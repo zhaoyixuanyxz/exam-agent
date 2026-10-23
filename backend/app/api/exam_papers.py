@@ -51,7 +51,14 @@ async def split_exam_paper_by_pages(
                 f"第 {idx + 1} 段页码无效：文档共 {total} 页，收到 {a}-{b}",
             )
         try:
-            text = parse_pdf_page_range_text(path, a, b)
+            from app.services.vision_read import read_image_text
+
+            text = parse_pdf_page_range_text(
+                path,
+                a,
+                b,
+                read_image_text=read_image_text,
+            )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         npid = str(uuid.uuid4())

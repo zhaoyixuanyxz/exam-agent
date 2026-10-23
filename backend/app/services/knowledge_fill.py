@@ -23,6 +23,15 @@ class KnowledgeFillTimeout(Exception):
         super().__init__(TIMEOUT_MESSAGE)
 
 
+class KnowledgeFillFailed(Exception):
+    """A non-timeout failure while filling; keeps points merged so far."""
+
+    def __init__(self, analysis: KnowledgeAnalysisResult, cause: BaseException):
+        self.analysis = analysis
+        self.cause = cause
+        super().__init__(str(cause))
+
+
 def is_connection_timeout(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     text = str(exc).lower()
@@ -75,15 +84,22 @@ def merge_fill(
             points.append(point)
             known.add(point.key)
     mappings = list(base.mappings)
+    # ask_one is always for one concrete order; remap whatever order the model wrote.
     for mapping in extra.mappings:
-        if int(mapping.question_order) != only_order:
-            continue
         key = (mapping.knowledge_point_key or "").strip()
         if not key:
             continue
         mappings.append(
             QuestionKnowledgeMapping(question_order=only_order, knowledge_point_key=key)
         )
+    if not any(int(m.question_order) == only_order and (m.knowledge_point_key or "").strip() for m in mappings):
+        for point in extra.knowledge_points:
+            key = (point.key or "").strip()
+            if key:
+                mappings.append(
+                    QuestionKnowledgeMapping(question_order=only_order, knowledge_point_key=key)
+                )
+                break
     return base.model_copy(
         update={"knowledge_points": points, "mappings": mappings}
     )
@@ -94,7 +110,8 @@ def fill_missing_knowledge(
     analysis: KnowledgeAnalysisResult,
     ask_one: AskOne,
 ) -> KnowledgeAnalysisResult:
-    # The operator required re-asking until a point exists, so there is no attempt cap.
+    # The operator required re-asking until a point exists, so there is no attempt cap
+    # for empty replies. Wrong question_order from the model is remapped in merge_fill.
     while True:
         missing = missing_orders(paper, analysis)
         if not missing:
@@ -104,6 +121,8 @@ def fill_missing_knowledge(
             extra = ask_one(order, _stem_for(paper, order))
         except KnowledgeFillTimeout:
             raise KnowledgeFillTimeout(analysis) from None
+        except Exception as exc:
+            raise KnowledgeFillFailed(analysis, exc) from exc
         analysis = merge_fill(analysis, extra, order)
 
 

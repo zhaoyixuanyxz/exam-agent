@@ -32,8 +32,11 @@ function uploadKind(name: string): "doc" | "img" | "other" {
 }
 
 function filesAreMixed(list: File[]): boolean {
-  const kinds = new Set(list.map((f) => uploadKind(f.name)));
-  return kinds.has("doc") && kinds.has("img");
+  const kinds = list.map((f) => uploadKind(f.name));
+  const set = new Set(kinds);
+  if (set.has("doc") && set.has("img")) return true;
+  // Multiple PDFs/Word would only ingest the first; reject up front.
+  return kinds.filter((k) => k === "doc").length > 1;
 }
 
 type ChatProps = {

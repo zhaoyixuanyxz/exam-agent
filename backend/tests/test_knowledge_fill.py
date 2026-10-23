@@ -65,6 +65,67 @@ def test_fill_retries_only_the_empty_question_until_it_has_a_point():
     assert keys2 == ["kp_b"]
 
 
+def test_merge_fill_remaps_model_question_order_onto_asked_order():
+    """Models often number the lone item as 1; that must still cover the asked order."""
+    from app.services.knowledge_fill import fill_missing_knowledge, merge_fill
+
+    base = KnowledgeAnalysisResult(
+        theme_title="主题",
+        knowledge_points=[KnowledgePointItem(key="kp_a", name="考点甲", summary="甲")],
+        mappings=[QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_a")],
+    )
+    extra = KnowledgeAnalysisResult(
+        theme_title="主题",
+        knowledge_points=[KnowledgePointItem(key="kp_b", name="考点乙", summary="乙")],
+        mappings=[QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_b")],
+    )
+    merged = merge_fill(base, extra, only_order=2)
+    assert missing_orders(_paper(), merged) == []
+    assert [m.question_order for m in merged.mappings if m.knowledge_point_key == "kp_b"] == [2]
+
+    paper = _paper()
+    calls: list[int] = []
+
+    def ask_one(order: int, stem: str):
+        calls.append(order)
+        return KnowledgeAnalysisResult(
+            theme_title="主题",
+            knowledge_points=[KnowledgePointItem(key="kp_b", name="考点乙", summary="乙")],
+            mappings=[QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_b")],
+        )
+
+    filled = fill_missing_knowledge(paper, base, ask_one)
+    assert calls == [2]
+    assert missing_orders(paper, filled) == []
+
+
+def test_fill_non_timeout_error_keeps_points_already_merged():
+    from app.services.knowledge_fill import KnowledgeFillFailed, fill_missing_knowledge
+
+    paper = _paper()
+    analysis = KnowledgeAnalysisResult(theme_title="主题", knowledge_points=[], mappings=[])
+    calls: list[int] = []
+
+    def ask_one(order: int, stem: str):
+        calls.append(order)
+        if order == 1:
+            return KnowledgeAnalysisResult(
+                theme_title="主题",
+                knowledge_points=[KnowledgePointItem(key="kp_a", name="考点甲", summary="甲")],
+                mappings=[QuestionKnowledgeMapping(question_order=1, knowledge_point_key="kp_a")],
+            )
+        raise RuntimeError("model boom")
+
+    try:
+        fill_missing_knowledge(paper, analysis, ask_one)
+        raised = False
+    except KnowledgeFillFailed as exc:
+        raised = True
+        assert [m.knowledge_point_key for m in exc.analysis.mappings] == ["kp_a"]
+    assert raised is True
+    assert calls == [1, 2]
+
+
 def test_unreadable_page_is_detected_without_inventing_questions():
     from app.services.knowledge_fill import UNREADABLE_PAGE, is_unreadable_page
 
