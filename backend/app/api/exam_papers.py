@@ -24,6 +24,7 @@ class ConversationIdBody(BaseModel):
 class SplitByPagesBody(BaseModel):
     conversation_id: str = Field(..., min_length=1)
     ranges: list[list[int]] = Field(..., min_length=1)
+    labels: list[str] | None = None
 
 
 @router.post("/exam-papers/{paper_id}/anthology-split/mark-needed")
@@ -95,7 +96,11 @@ async def split_exam_paper_by_pages(
     except Exception as e:
         raise HTTPException(400, f"无法读取 PDF：{e!s}") from e
 
+    if body.labels is not None and len(body.labels) != len(body.ranges):
+        raise HTTPException(400, "labels 须与 ranges 等长，或省略 labels")
+
     new_papers: list[dict] = []
+    covered: set[int] = set()
     for idx, pair in enumerate(body.ranges):
         if len(pair) != 2:
             raise HTTPException(400, "每个 range 须为 [起始页, 结束页] 两个整数")
@@ -116,6 +121,10 @@ async def split_exam_paper_by_pages(
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        label = None
+        if body.labels and idx < len(body.labels) and str(body.labels[idx]).strip():
+            label = str(body.labels[idx]).strip()
+        display = label or f"片段{idx + 1}"
         npid = str(uuid.uuid4())
         session.add(
             ExamPaper(
@@ -124,20 +133,33 @@ async def split_exam_paper_by_pages(
                 raw_path=p.raw_path,
                 source_type="pdf",
                 raw_text=text,
-                display_name=f"片段{idx + 1}",
+                display_name=display,
+                anthology_split_status="none",
             )
         )
         new_papers.append(
             {
                 "id": npid,
-                "label": f"片段{idx + 1}",
+                "label": display,
                 "pages": [a, b],
             }
         )
+        covered.update(range(a, b + 1))
+
+    p.anthology_split_status = "done"
+    missing = [i for i in range(1, total + 1) if i not in covered]
+    hint = ""
+    if missing:
+        if len(missing) <= 5:
+            pages_s = "、".join(str(i) for i in missing)
+        else:
+            pages_s = "、".join(str(i) for i in missing[:5]) + "…"
+        hint = f"有页未纳入任何套（将排除）：{pages_s}"
 
     await session.commit()
     return {
         "new_papers": new_papers,
+        "uncovered_pages_hint": hint,
         "message": (
             "已按页生成新材料记录。后续对话默认仍绑定本轮 paper_id；"
             "若需处理某条新材料，请在下一条消息中说明对应 paper_id（可抄下列 id 前 8 位）。"

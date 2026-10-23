@@ -189,3 +189,44 @@ def test_suggest_wrong_conversation_returns_404(tmp_path: Path):
             json={"conversation_id": other_cid},
         )
         assert r.status_code == 404
+
+
+def test_split_sets_parent_done_and_labels(tmp_path: Path, monkeypatch):
+    # brief 页文案 CJK < 4 会走 vision；单测不打真实 API
+    monkeypatch.setattr(
+        "app.services.vision_read.read_image_text",
+        lambda _b: "足够中文文本一二三四",
+    )
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        pdf = _pdf(tmp_path, ["2021年中考 A", "a2", "2022年中考 B", "b2"])
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                raw_path=pdf.as_posix(),
+                anthology_split_status="needed",
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(
+            f"/api/exam-papers/{pid}/split-by-pages",
+            json={
+                "conversation_id": cid,
+                "ranges": [[1, 2], [3, 4]],
+                "labels": ["2021年试卷", "2022年试卷"],
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["new_papers"]) == 2
+        assert body["new_papers"][0]["label"] == "2021年试卷"
+        # 全覆盖时 hint 可为 ""（brief 写 assert body.get(...)；空串为假，故显式比空）
+        assert body.get("uncovered_pages_hint", "") == ""
+        with sync_session() as s:
+            parent = s.get(ExamPaper, pid)
+            assert parent.anthology_split_status == "done"
+            child = s.get(ExamPaper, body["new_papers"][0]["id"])
+            assert child.display_name == "2021年试卷"
+            assert (child.anthology_split_status or "none") == "none"
