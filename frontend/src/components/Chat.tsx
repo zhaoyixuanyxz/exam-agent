@@ -820,16 +820,23 @@ export function Chat({
                     return;
                   }
                   const ids = (j.new_papers || []) as { id: string; label?: string }[];
+                  const first = ids[0];
                   const idLine = ids.map((x) => `${x.label ?? "新材料"}: ${x.id.slice(0, 8)}…`).join("；");
                   const hint = String((j.uncovered_pages_hint as string) || "").trim();
+                  const firstLabel = (first?.label || "").trim() || "第一套";
                   setSplitNote(
-                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
+                    first
+                      ? `拆分完成。已选第一套（${firstLabel}），请拆题并确认后出考点说明。新材料：${idLine}`
+                      : `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
                   );
                   setUncoveredHint(hint || null);
                   setSplitRanges("");
                   setSplitLabels([]);
                   autoSuggestForRef.current = null;
                   await loadPapers();
+                  if (first?.id) {
+                    setTargetPaperId(first.id);
+                  }
                   onConversationActivity?.();
                 } catch {
                   setSplitNote("网络错误，请重试。");
