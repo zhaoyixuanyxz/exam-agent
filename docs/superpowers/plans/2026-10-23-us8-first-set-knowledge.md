@@ -152,7 +152,7 @@ def test_tools_refuse_anthology_parent_done():
         )
         assert out2 == ANTHOLOGY_PARENT_DONE_TOOLS
         out3 = generate_chunk_practice_pdfs_batch.invoke(
-            {"paper_id": pid, "knowledge_point_keys_json": "[]"}
+            {"paper_id": pid, "items_json": "[]"}
         )
         assert out3 == ANTHOLOGY_PARENT_DONE_TOOLS
         out4 = generate_all_practice_pdfs.invoke({"paper_id": pid})
@@ -170,8 +170,6 @@ def test_tools_allow_child_none_past_gate():
         assert out != ANTHOLOGY_PARENT_DONE_TOOLS
         assert "考点" in out or "分析" in out
 ```
-
-（若 batch 参数名与仓库不一致，打开 `tools.py` 中 `generate_chunk_practice_pdfs_batch` 签名对齐。）
 
 - [ ] **Step 2: Run to fail**
 
