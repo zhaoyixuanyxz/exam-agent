@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 TIMEOUT_MESSAGE = "连接超时建议重试"
+MAX_RETRIES_PER_POINT = 3
 
 
 class PracticeFillTimeout(Exception):
@@ -23,13 +25,18 @@ def fill_practice_pdfs(
     stored_keys: list[str],
     generate_one: GenerateOne,
 ) -> list[str]:
-    # Retry until the page is acceptable. There is no attempt cap.
     stored = list(stored_keys)
     stored_set = set(stored)
+    abandoned: set[str] = set()
+    retries: dict[str, int] = {}
     while True:
-        missing = [item for item in points if item[0] not in stored_set]
+        missing = [
+            item
+            for item in points
+            if item[0] not in stored_set and item[0] not in abandoned
+        ]
         if not missing:
-            return [item[0] for item in points]
+            return [item[0] for item in points if item[0] in stored_set]
         key, name = missing[0]
         try:
             action, stored_key = generate_one(key, name)
@@ -38,14 +45,21 @@ def fill_practice_pdfs(
         if action == "store":
             stored.append(stored_key)
             stored_set.add(stored_key)
+            continue
+        retries[key] = retries.get(key, 0) + 1
+        if retries[key] >= MAX_RETRIES_PER_POINT:
+            abandoned.add(key)
 
 
-_FIGURE_MARKERS = ("几何", "函数图像", "函数图象", "电路", "化学装置")
+_FIGURE_MARKERS = ("几何", "电路", "化学装置")
+_FUNCTION_GRAPH_RE = re.compile(r"函数.{0,6}图[象像]")
 
 
 def needs_figure(point_name: str, stems: list[str]) -> bool:
     blob = f"{point_name}\n" + "\n".join(stems)
-    return any(marker in blob for marker in _FIGURE_MARKERS)
+    if any(marker in blob for marker in _FIGURE_MARKERS):
+        return True
+    return bool(_FUNCTION_GRAPH_RE.search(blob))
 
 
 def _has_text(stems: list[str]) -> bool:
@@ -63,19 +77,34 @@ def practice_outcome(
     stems: list[str],
     figure_kinds: list[str],
     uses_paper_figure: list[bool],
+    *,
+    include_figures: bool = True,
 ) -> str:
     has_text = _has_text(stems)
     has_figure = _has_figure(figure_kinds, uses_paper_figure)
     if not has_text and not has_figure:
         return "retry"
-    if needs_figure(point_name, stems) and not has_figure:
+    if include_figures and needs_figure(point_name, stems) and not has_figure:
         return "retry"
     return "store"
 
 
-def generate_one_for_tool(key: str, name: str, *, draft, store) -> tuple[str, str]:
+def generate_one_for_tool(
+    key: str,
+    name: str,
+    *,
+    draft,
+    store,
+    include_figures: bool = True,
+) -> tuple[str, str]:
     stems, figure_kinds, uses_paper_figure, payload = draft(key, name)
-    action = practice_outcome(name, stems, figure_kinds, uses_paper_figure)
+    action = practice_outcome(
+        name,
+        stems,
+        figure_kinds,
+        uses_paper_figure,
+        include_figures=include_figures,
+    )
     if action == "store":
         store(payload)
     return action, key

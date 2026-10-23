@@ -9,6 +9,8 @@ def test_needs_figure_matches_diagram_topics_not_the_bare_word_function():
     assert needs_figure("一次函数", ["求解析式"]) is False
     assert needs_figure("牛顿第一定律", ["用文字说明惯性"]) is False
     assert needs_figure("函数", ["观察函数图象"]) is True
+    assert needs_figure("一次函数的图象", ["求交点"]) is True
+    assert needs_figure("二次函数的图象与性质", ["开口方向"]) is True
 
 
 def test_practice_outcome_retries_blank_and_missing_figure_only():
@@ -19,6 +21,28 @@ def test_practice_outcome_retries_blank_and_missing_figure_only():
     assert practice_outcome("一次函数", ["求解析式"], ["none"], [False]) == "store"
     assert practice_outcome("概念", ["", "  "], ["none"], [False]) == "retry"
     assert practice_outcome("电路", [""], ["none"], [True]) == "store"
+    assert (
+        practice_outcome("几何", ["求面积"], ["none"], [False], include_figures=False)
+        == "store"
+    )
+
+
+def test_fill_abandons_point_after_retry_cap_without_blocking_later_points():
+    from app.services.practice_fill import MAX_RETRIES_PER_POINT, fill_practice_pdfs
+
+    points = [("kp_bad", "几何"), ("kp_ok", "一次函数")]
+    calls: list[str] = []
+
+    def generate_one(key: str, name: str):
+        calls.append(key)
+        if key == "kp_bad":
+            return ("retry", key)
+        return ("store", key)
+
+    stored = fill_practice_pdfs(points, stored_keys=[], generate_one=generate_one)
+    assert stored == ["kp_ok"]
+    assert calls.count("kp_bad") == MAX_RETRIES_PER_POINT
+    assert "kp_ok" in calls
 
 
 def test_fill_skips_stored_points_and_timeout_keeps_them():

@@ -29,7 +29,19 @@ def _has_parsed(p: ExamPaper) -> bool:
 
 
 def _has_knowledge(p: ExamPaper) -> bool:
-    return bool(p.knowledge_analysis_json)
+    if not p.knowledge_analysis_json:
+        return False
+    if not p.parsed_json:
+        return True
+    try:
+        from app.models.schemas import KnowledgeAnalysisResult, StructuredPaper
+        from app.services.knowledge_fill import missing_orders
+
+        paper = StructuredPaper.model_validate(p.parsed_json)
+        analysis = KnowledgeAnalysisResult.model_validate(p.knowledge_analysis_json)
+        return not missing_orders(paper, analysis)
+    except Exception:
+        return True
 
 
 def _has_practice_pdf(p: ExamPaper) -> bool:

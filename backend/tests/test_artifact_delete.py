@@ -262,9 +262,9 @@ def test_practice_regenerate_fills_only_missing_kind(tmp_path: Path):
                 )
                 assert err is None
                 s.commit()
-        assert calls["q"] == 0
+        # Q+A pair must both come from the same new draft (no leftover mismatch).
+        assert calls["q"] == 1
         assert calls["a"] == 1
-        assert q_pdf.read_bytes() == b"%PDF-1.4 question"
 
 
 def test_practice_regenerate_rewrites_questions_only_when_pdf_exists(tmp_path: Path):

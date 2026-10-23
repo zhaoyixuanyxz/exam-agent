@@ -37,6 +37,10 @@ def extract_exam_text(
             raise ValueError(MIXED_UPLOAD_MESSAGE)
     if "image" in kinds and ("pdf" in kinds or "docx" in kinds):
         raise ValueError(MIXED_UPLOAD_MESSAGE)
+    doc_count = sum(1 for k in kinds if k in ("pdf", "docx"))
+    if doc_count > 1:
+        # Multi-select stores every path but historically only the first doc was read.
+        raise ValueError(MIXED_UPLOAD_MESSAGE)
     parts: list[str] = []
     if kinds[0] == "docx":
         return parse_docx(paths[0])
