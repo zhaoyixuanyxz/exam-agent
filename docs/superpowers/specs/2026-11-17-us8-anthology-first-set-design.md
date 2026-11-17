@@ -3,7 +3,8 @@ artifact: design
 story: US-8
 version: "1.0"
 created: 2026-11-17
-status: draft
+approved: 2026-11-17
+status: approved
 ---
 
 # US-8 设计：分套后至少一套能出该套考点说明
@@ -150,4 +151,7 @@ status: draft
 
 ## 下一步
 
-用户审阅本 spec 无异议后 → 使用 `writing-plans` 编写 `docs/superpowers/plans/2026-11-17-us8-anthology-first-set.md` 实现计划。
+- **Spec**：2026-11-17 对话内验收通过（`status: approved`）。
+- **Plan**：`docs/superpowers/plans/2026-11-17-us8-anthology-first-set.md`。
+- **研发**：`main` 上 `6bddc0e`（含 US-7 门禁与 US-8 测试/前端）；自动化 **309 passed**（本会话）。
+- **产品验收**：`docs/US-8-产品验收记录.md`（秒表 AC-3 等）与五模块统一延后，下一实现模块 **US-9**（建议新会话先 spec）。

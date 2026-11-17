@@ -8,7 +8,19 @@
 
 **Tech Stack:** Python 3.12、FastAPI、SQLAlchemy、pytest、React 18、TypeScript。
 
-**Spec:** `docs/superpowers/specs/2026-11-17-us8-anthology-first-set-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-17-us8-anthology-first-set-design.md`（2026-11-17 **approved**）
+
+**Implementation status（2026-11-17，本会话收口）**
+
+| 项 | 状态 |
+|----|------|
+| Task 0–4、6（代码 + 自动化） | **Done** → `6bddc0e` |
+| Task 5（`docs/US-8-产品验收记录.md` 真人秒表） | **Deferred**（五模块统一产品验收） |
+| `pytest tests -q` | **309 passed**, 2 skipped（本会话） |
+| `npm run build` | **Pass** |
+| 远程 | 收口 commit + **push** `main` |
+
+下一模块：**US-9**（本对话范围外）。
 
 ---
 
