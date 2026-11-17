@@ -6,6 +6,11 @@ Set-Location $Root
 
 Write-Host "==> Backend: ruff" -ForegroundColor Cyan
 Push-Location (Join-Path $Root "backend")
+foreach ($d in @(".\.pytest_tmp", ".\.pytest_session_db")) {
+    if (Test-Path $d) {
+        Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
+    }
+}
 if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
     Write-Host "未找到 backend\.venv，正在创建并安装依赖..." -ForegroundColor Yellow
     python -m venv .venv

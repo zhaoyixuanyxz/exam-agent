@@ -587,6 +587,12 @@ def run_knowledge_analysis(paper_id: str) -> str:
         st = (p.structured_confirm_status or "none").strip() or "none"
         if st != "confirmed":
             return "请先在「结构化结果」中确认拆题结果，再运行考点分析。"
+        st_anth = (getattr(p, "anthology_split_status", None) or "none").strip() or "none"
+        if st_anth in ("done", "needed"):
+            return (
+                "这是已切开或待分套的合订父本，请先在材料列表中选择某一「套卷」材料，"
+                "再生成该套的考点说明。"
+            )
         if not p.alignment_json:
             return "请先 save_alignment_metadata。"
         sp = StructuredPaper.model_validate(p.parsed_json)

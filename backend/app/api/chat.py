@@ -685,6 +685,7 @@ async def list_conversation_papers(
                 "last_practice_config": p.last_practice_config_json
                 if isinstance(p.last_practice_config_json, dict)
                 else None,
+                "anthology_split_status": getattr(p, "anthology_split_status", None) or "none",
             }
             for p in papers
         ]
@@ -742,10 +743,17 @@ async def get_paper_structured(
             )
         except Exception:
             point_rows = []
+    anomalies = list_anomalies(p.parsed_json)
+    st_anth = (getattr(p, "anthology_split_status", None) or "none").strip() or "none"
+    if st_anth == "none" and any("重复" in a for a in anomalies):
+        p.anthology_split_status = "needed"
+        st_anth = "needed"
+        await session.commit()
     return {
         "paper_id": p.id,
         "display_name": p.display_name,
         "structured_confirm_status": st,
+        "anthology_split_status": st_anth,
         "structured_version": int(p.structured_version or 0),
         "structured_confirmed_at": p.structured_confirmed_at.isoformat()
         if p.structured_confirmed_at
@@ -755,7 +763,7 @@ async def get_paper_structured(
         else None,
         "parsed_json": p.parsed_json,
         "summary": summary,
-        "anomalies": list_anomalies(p.parsed_json),
+        "anomalies": anomalies,
         "question_knowledge": point_rows,
         "alignment_json": p.alignment_json,
     }
@@ -809,6 +817,11 @@ async def post_confirm_structured(
         StructuredPaper.model_validate(p.parsed_json)
     except Exception as e:
         raise HTTPException(400, f"当前结构化数据仍无法通过校验，无法确认：{e!s}") from e
+    from app.services.anthology_ranges import confirm_blocked_message
+
+    block = confirm_blocked_message(getattr(p, "anthology_split_status", None))
+    if block:
+        raise HTTPException(400, block)
     if list_anomalies(p.parsed_json):
         # 允许带警告仍确认，由产品决定；此处仅阻止「无法解析」类已在 validate 处理
         pass
@@ -823,6 +836,26 @@ async def post_confirm_structured(
         "structured_confirmed_at": p.structured_confirmed_at.isoformat() if p.structured_confirmed_at else None,
         "question_assets_synced": n_assets,
     }
+
+
+@router.post("/conversations/{conversation_id}/papers/{paper_id}/anthology-split/single-ok")
+async def post_anthology_single_ok(
+    conversation_id: str,
+    paper_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    p = await session.get(ExamPaper, paper_id)
+    if not p or p.conversation_id != conversation_id:
+        raise HTTPException(404, "paper not found")
+    st = (p.anthology_split_status or "none").strip() or "none"
+    if st != "needed":
+        raise HTTPException(400, "仅待分套材料可选择按单套继续。")
+    p.anthology_split_status = "single_ok"
+    await session.commit()
+    return {"ok": True, "anthology_split_status": p.anthology_split_status}
 
 
 @router.post("/conversations/{conversation_id}/papers/{paper_id}/question-assets/rebuild")

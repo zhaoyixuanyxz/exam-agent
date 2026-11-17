@@ -13,6 +13,7 @@ type StructuredPayload = {
   paper_id: string;
   display_name: string | null;
   structured_confirm_status: string;
+  anthology_split_status?: string;
   structured_version: number;
   parsed_json: Record<string, unknown> | null;
   summary: Summary;
@@ -205,6 +206,14 @@ export function StructuredResultPanel({
         </p>
       )}
 
+      {data &&
+        (data.anthology_split_status === "done" || data.anthology_split_status === "needed") && (
+          <p className="mb-2 rounded-xl border border-sky-200 bg-sky-50/90 p-2 text-sm text-sky-950">
+            此为合订父本，不能在这里确认。请在材料列表选择切开后的某一「套卷」，再拆题并确认。
+            首套验收：确认本套结构化后，继续生成彩色考点说明 PDF。
+          </p>
+        )}
+
       {data && data.anomalies && data.anomalies.length > 0 && (
         <ul className="mb-2 list-inside list-disc rounded-xl border border-amber-200 bg-amber-50/90 p-2 text-sm text-amber-950">
           {data.anomalies.map((a, i) => (
@@ -240,7 +249,12 @@ export function StructuredResultPanel({
         </button>
         <button
           type="button"
-          disabled={confirming || (data?.structured_confirm_status === "confirmed")}
+          disabled={
+            confirming ||
+            data?.structured_confirm_status === "confirmed" ||
+            data?.anthology_split_status === "done" ||
+            data?.anthology_split_status === "needed"
+          }
           onClick={() => void confirm()}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-50"
         >

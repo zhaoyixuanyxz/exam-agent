@@ -65,6 +65,10 @@ function parsePageRanges(s: string): number[][] | null {
   return out.length ? out : null;
 }
 
+function formatRangesFromApi(ranges: number[][]): string {
+  return ranges.map(([a, b]) => `${a}-${b}`).join(", ");
+}
+
 export function Chat({
   conversationId,
   onConversationActivity,
@@ -87,8 +91,10 @@ export function Chat({
   const [v2Tick, setV2Tick] = useState(0);
   const [clientStreamErrorHint, setClientStreamErrorHint] = useState<string | null>(null);
   const [splitRanges, setSplitRanges] = useState("");
+  const [splitLabels, setSplitLabels] = useState<string[]>([]);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitNote, setSplitNote] = useState<string | null>(null);
+  const suggestLoadedForRef = useRef<string | null>(null);
   const [practiceConfig, setPracticeConfig] = useState<PracticeGenerateConfig>(() => ({
     ...defaultPracticeConfig,
   }));
@@ -249,6 +255,40 @@ export function Chat({
     }
     return pdf[0] ?? null;
   }, [papers, job.streamPaperId, targetPaperId]);
+
+  const fetchSuggestPrefill = useCallback(
+    async (paperId: string) => {
+      const sgg = await fetch(`${API}/api/exam-papers/${paperId}/suggest-page-ranges`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId }),
+      });
+      if (!sgg.ok) return;
+      const body = (await sgg.json()) as {
+        ranges?: number[][];
+        labels?: string[];
+        message?: string;
+      };
+      if (body.ranges?.length) {
+        setSplitRanges(formatRangesFromApi(body.ranges));
+        setSplitLabels(body.labels ?? []);
+      }
+      if (body.message) {
+        setSplitNote(body.message);
+      }
+    },
+    [conversationId],
+  );
+
+  useEffect(() => {
+    if (!splitTarget) return;
+    const st = papers.find((p) => p.id === splitTarget.id)?.anthology_split_status ?? "none";
+    if (st !== "needed") return;
+    if (splitRanges.trim()) return;
+    if (suggestLoadedForRef.current === splitTarget.id) return;
+    suggestLoadedForRef.current = splitTarget.id;
+    void fetchSuggestPrefill(splitTarget.id);
+  }, [splitTarget, papers, splitRanges, fetchSuggestPrefill]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -635,8 +675,72 @@ export function Chat({
           </div>
           <p className="mt-1">
             用逗号分隔多个区间，如 <span className="rounded bg-white px-1 font-mono">1-3, 5-7</span>
-            （从 1 起算，闭区间）。拆分后生成新材料；后续对话默认仍绑定当前轮次的 paper_id，请在消息里说明要用的材料 id。
+            （从 1 起算，闭区间）。拆分后生成新材料；请在左侧选择某一「套卷」再拆题与出考点说明。
           </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={splitBusy}
+              className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-1 text-violet-900 hover:bg-violet-100 disabled:opacity-50"
+              onClick={() =>
+                void (async () => {
+                  setSplitBusy(true);
+                  setSplitNote(null);
+                  try {
+                    const r = await fetch(
+                      `${API}/api/exam-papers/${splitTarget.id}/anthology-split/mark-needed`,
+                      {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ conversation_id: conversationId }),
+                      },
+                    );
+                    if (!r.ok) {
+                      setSplitNote("无法标记为合订本");
+                      return;
+                    }
+                    await fetchSuggestPrefill(splitTarget.id);
+                    await loadPapers();
+                    setV2Tick((t) => t + 1);
+                  } finally {
+                    setSplitBusy(false);
+                  }
+                })()
+              }
+            >
+              这是合订本 / 需要分套
+            </button>
+            {(papers.find((p) => p.id === splitTarget.id)?.anthology_split_status ?? "none") ===
+              "needed" && (
+              <button
+                type="button"
+                disabled={splitBusy}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1 hover:bg-slate-50 disabled:opacity-50"
+                onClick={() =>
+                  void (async () => {
+                    setSplitBusy(true);
+                    try {
+                      const r = await fetch(
+                        `${API}/api/conversations/${conversationId}/papers/${splitTarget.id}/anthology-split/single-ok`,
+                        { method: "POST" },
+                      );
+                      if (!r.ok) {
+                        setSplitNote("无法切换为单套模式");
+                        return;
+                      }
+                      await loadPapers();
+                      setV2Tick((t) => t + 1);
+                      setSplitNote("已按单套继续，可直接确认结构化。");
+                    } finally {
+                      setSplitBusy(false);
+                    }
+                  })()
+                }
+              >
+                按单套继续
+              </button>
+            )}
+          </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               className="min-w-[180px] flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono"
@@ -666,6 +770,9 @@ export function Chat({
                       body: JSON.stringify({
                         conversation_id: conversationId,
                         ranges,
+                        ...(splitLabels.length === ranges.length
+                          ? { labels: splitLabels }
+                          : {}),
                       }),
                     },
                   );
@@ -689,10 +796,16 @@ export function Chat({
                   }
                   const ids = (j.new_papers || []) as { id: string; label?: string }[];
                   const idLine = ids.map((x) => `${x.label ?? "新材料"}: ${x.id.slice(0, 8)}…`).join("；");
+                  const hint =
+                    typeof j.uncovered_pages_hint === "string" && j.uncovered_pages_hint
+                      ? ` ${j.uncovered_pages_hint}`
+                      : "";
                   setSplitNote(
-                    `${j.message || "拆分完成。"} 新材料：${idLine || "（见响应）"}`,
+                    `${j.message || "拆分完成。"}${hint} 新材料：${idLine || "（见响应）"}`,
                   );
                   setSplitRanges("");
+                  setSplitLabels([]);
+                  suggestLoadedForRef.current = null;
                   await loadPapers();
                   onConversationActivity?.();
                 } catch {

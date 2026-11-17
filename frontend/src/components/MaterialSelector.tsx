@@ -8,6 +8,7 @@ export type PaperListItem = {
   raw_path: string | null;
   display_name?: string | null;
   structured_confirm_status?: string;
+  anthology_split_status?: string;
   /** 服务端保存的练习生成配置快照 */
   last_practice_config?: Record<string, unknown> | null;
 };
@@ -22,6 +23,13 @@ type Props = {
 
 function shortId(id: string) {
   return id.length >= 8 ? id.slice(0, 8) : id;
+}
+
+function anthologyBadge(p: PaperListItem) {
+  const st = p.anthology_split_status ?? "none";
+  if (st === "done") return " · 合订·已切开";
+  if (st === "needed") return " · 待分套";
+  return "";
 }
 
 function displayLabel(p: PaperListItem) {
@@ -102,7 +110,8 @@ export function MaterialSelector({
           >
             {papers.map((p) => (
               <option key={p.id} value={p.id}>
-                {displayLabel(p)} ({shortId(p.id)}…)
+                {displayLabel(p)}
+                {anthologyBadge(p)} ({shortId(p.id)}…)
               </option>
             ))}
           </select>

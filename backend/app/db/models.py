@@ -61,6 +61,8 @@ class ExamPaper(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # V2.1：界面「练习生成配置」最后保存的快照；出题工具优先与此合并
     last_practice_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # none | needed | done | single_ok — 合订分套门禁（US-7）
+    anthology_split_status: Mapped[str] = mapped_column(String(32), default="none")
 
     conversation: Mapped["Conversation"] = relationship(back_populates="papers")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="paper")

@@ -6,6 +6,8 @@ frontend/tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 .pytest_cache/
+backend/.pytest_tmp/
+backend/.pytest_session_db/
 .ruff_cache/
 node_modules/
 dist/
