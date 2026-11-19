@@ -198,3 +198,77 @@ def test_get_structured_marks_needed_on_duplicate_order_index():
         assert r.json()["anthology_split_status"] == "needed"
         with sync_session() as s:
             assert s.get(ExamPaper, pid).anthology_split_status == "needed"
+
+
+def test_confirm_ok_when_anthology_none():
+    """US-9 AC-1: 单套默认 none 可确认。"""
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                parsed_json=_PARSED,
+                structured_confirm_status="pending",
+                anthology_split_status="none",
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        r = client.post(f"/api/conversations/{cid}/papers/{pid}/structured/confirm")
+        assert r.status_code == 200
+
+
+def test_duplicate_then_single_ok_then_confirm():
+    """US-9 AC-2: 重复→needed→single_ok→confirm。"""
+    with TestClient(app) as client:
+        cid = client.post("/api/conversations").json()["conversation_id"]
+        dup_parsed = {
+            "title": "单套误判",
+            "sections": [
+                {
+                    "title": "一",
+                    "questions": [
+                        {
+                            "order_index": 1,
+                            "qtype": "填空",
+                            "stem": "a",
+                            "options": [],
+                            "blocks": [],
+                        },
+                        {
+                            "order_index": 1,
+                            "qtype": "填空",
+                            "stem": "b",
+                            "options": [],
+                            "blocks": [],
+                        },
+                    ],
+                }
+            ],
+        }
+        with sync_session() as s:
+            paper = ExamPaper(
+                conversation_id=cid,
+                source_type="pdf",
+                anthology_split_status="none",
+                parsed_json=dup_parsed,
+            )
+            s.add(paper)
+            s.commit()
+            pid = paper.id
+        g = client.get(f"/api/conversations/{cid}/papers/{pid}/structured")
+        assert g.status_code == 200
+        assert g.json()["anthology_split_status"] == "needed"
+        blocked = client.post(f"/api/conversations/{cid}/papers/{pid}/structured/confirm")
+        assert blocked.status_code == 400
+        ok = client.post(f"/api/conversations/{cid}/papers/{pid}/anthology-split/single-ok")
+        assert ok.status_code == 200
+        assert ok.json()["anthology_split_status"] == "single_ok"
+        with sync_session() as s:
+            paper = s.get(ExamPaper, pid)
+            assert paper is not None
+            paper.parsed_json = _PARSED
+            s.commit()
+        confirmed = client.post(f"/api/conversations/{cid}/papers/{pid}/structured/confirm")
+        assert confirmed.status_code == 200

@@ -45,6 +45,8 @@ export function StructuredResultPanel({
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [singleOkBusy, setSingleOkBusy] = useState(false);
+  const [singleOkNote, setSingleOkNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!paperId) {
@@ -132,6 +134,31 @@ export function StructuredResultPanel({
     }
   }, [conversationId, paperId, load, onAfterSave]);
 
+  const runSingleOk = useCallback(async () => {
+    if (!paperId) return;
+    setSingleOkBusy(true);
+    setSingleOkNote(null);
+    setSaveErr(null);
+    try {
+      const r = await fetch(
+        `${API}/api/conversations/${conversationId}/papers/${paperId}/anthology-split/single-ok`,
+        { method: "POST" },
+      );
+      if (!r.ok) {
+        const t = await r.text();
+        setSingleOkNote(t || "无法切换为单套模式");
+        return;
+      }
+      setSingleOkNote("已按单套继续，可直接确认结构化。");
+      await load();
+      onAfterSave();
+    } catch {
+      setSingleOkNote("网络错误");
+    } finally {
+      setSingleOkBusy(false);
+    }
+  }, [conversationId, paperId, load, onAfterSave]);
+
   if (!paperId) {
     return null;
   }
@@ -206,13 +233,29 @@ export function StructuredResultPanel({
         </p>
       )}
 
-      {data &&
-        (data.anthology_split_status === "done" || data.anthology_split_status === "needed") && (
-          <p className="mb-2 rounded-xl border border-sky-200 bg-sky-50/90 p-2 text-sm text-sky-950">
-            此为合订父本，不能在这里确认。请在材料列表选择切开后的某一「套卷」，再拆题并确认。
-            首套验收：确认本套结构化后，继续生成彩色考点说明 PDF。
+      {data?.anthology_split_status === "done" && (
+        <p className="mb-2 rounded-xl border border-sky-200 bg-sky-50/90 p-2 text-sm text-sky-950">
+          此为合订父本，不能在这里确认。请在材料列表选择切开后的某一「套卷」，再拆题并确认。
+          首套验收：确认本套结构化后，继续生成彩色考点说明 PDF。
+        </p>
+      )}
+
+      {data?.anthology_split_status === "needed" && (
+        <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50/90 p-2 text-sm text-amber-950">
+          <p className="mb-2">
+            当前材料处于<strong>待分套</strong>：可先回到聊天区按页切开多卷；若实际只有一套卷，可点下方「按单套继续」，无需填写第二套页码。
           </p>
-        )}
+          <button
+            type="button"
+            disabled={singleOkBusy}
+            onClick={() => void runSingleOk()}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {singleOkBusy ? "处理中…" : "按单套继续"}
+          </button>
+          {singleOkNote ? <p className="mt-2 text-xs text-slate-700">{singleOkNote}</p> : null}
+        </div>
+      )}
 
       {data && data.anomalies && data.anomalies.length > 0 && (
         <ul className="mb-2 list-inside list-disc rounded-xl border border-amber-200 bg-amber-50/90 p-2 text-sm text-amber-950">
